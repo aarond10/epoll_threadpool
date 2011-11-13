@@ -68,6 +68,7 @@ class TcpListenSocket;
  * safely deleted (by reset()ing or otherwise letting shared_ptr's to the
  * object fall out of scope).
  *
+ * TODO(aarond10): Confirm and add test cases for the following:
  * Both disconnect and receive callbacks are guaranteed to run on one of socket
  * EventManager's threads. As a general rule of thumb, these functions should
  * not block as the EventManager's thread pool is of limited size.
