@@ -120,18 +120,14 @@ void TcpSocket::write(IOBuffer *data) {
   pthread_mutex_lock(&_internal->_mutex);
   _internal->_sendBuffer.append(data);
   if (_internal->_isStarted) {
-    _internal->_onCanSend();
+    _em->enqueue(
+        std::tr1::bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
   }
   pthread_mutex_unlock(&_internal->_mutex);
 }
 
 void TcpSocket::disconnect() {
   pthread_mutex_lock(&_internal->_mutex);
-  _internal->_disconnect();
-  pthread_mutex_unlock(&_internal->_mutex);
-}
-
-void TcpSocket::Internal::_disconnect() {
   if (_fd > 0) {
     _em->removeFd(_fd, EPOLLIN);
     _em->removeFd(_fd, EPOLLRDHUP);
@@ -144,6 +140,7 @@ void TcpSocket::Internal::_disconnect() {
       _em->enqueue(_disconnectCallback);
     }
   }
+  pthread_mutex_unlock(&_internal->_mutex);
 }
 
 bool TcpSocket::isDisconnected() const {
@@ -164,23 +161,6 @@ void TcpSocket::setDisconnectCallback(std::tr1::function<void()> callback) {
 
 void TcpSocket::Internal::onReceive() {
   pthread_mutex_lock(&_mutex);
-  _onReceive();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::onCanSend() {
-  pthread_mutex_lock(&_mutex);
-  _onCanSend();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::onDisconnect() {
-  pthread_mutex_lock(&_mutex);
-  _disconnect();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::_onReceive() {
   if (_fd > 0) {
     vector<char> *buf = new vector<char>();
     buf->resize(4096);
@@ -203,9 +183,11 @@ void TcpSocket::Internal::_onReceive() {
       _em->enqueue(std::tr1::bind(&TcpSocket::Internal::onDisconnect, shared_from_this()));
     }
   }
+  pthread_mutex_unlock(&_mutex);
 }
 
-void TcpSocket::Internal::_onCanSend() {
+void TcpSocket::Internal::onCanSend() {
+  pthread_mutex_lock(&_mutex);
   if (_fd > 0 && _sendBuffer.size()) {
     int sz = _sendBuffer.size() > 4096 ? 4096 : _sendBuffer.size();
     const char *buf = _sendBuffer.pulldown(sz);
@@ -215,10 +197,19 @@ void TcpSocket::Internal::_onCanSend() {
         _sendBuffer.consume(r);
       } else {
         LOG(ERROR) << "Write error. Returned " << r << ". Disconnecting.";
-        _disconnect();
+        pthread_mutex_unlock(&_mutex);
+        // since we only ever run on a worker thread, we can safely call 
+        // disconnect without using enqueue()
+        disconnect();
+        return;
       }
     }
   }
+  pthread_mutex_unlock(&_mutex);
+}
+
+void TcpSocket::Internal::onDisconnect() {
+  disconnect();
 }
 
 TcpListenSocket::TcpListenSocket(EventManager *em, int fd)
