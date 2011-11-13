@@ -93,20 +93,6 @@ class EventManager {
   void enqueue(function<void()> f, WallTime when);
 
   /**
-   * Enqueues a function to be run after all currently running threads complete
-   * their active tasks. This is a sort of non-blocking synchronisation point
-   * that can be used to defer cleanup of file descriptors that may currently be
-   * being processed.
-   *
-   * Warning: It *IS* possible to deadlock the EventManager if you block in a
-   * function enqueued with this method. Use this as a last resort and be
-   * particularly careful what you do. 
-   *
-   * It is safe to call this function from a worker thread itself.
-   */
-  void enqueueAfter(function<void()> f);
-
-  /**
    * Watches a given file descriptor for activity and triggers a callback when
    * an event occurs. The flags argument is the bitwise OR of the appropriate 
    * EPOLL* flags. See epoll.h for more details.

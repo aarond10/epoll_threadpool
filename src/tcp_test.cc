@@ -42,19 +42,6 @@ using namespace std;
 using namespace std::tr1;
 using namespace std::tr1::placeholders;
 
-template<class T>
-void _DeleteHelper(rpc::Notification *n, T *c) {
-  delete c;
-  n->signal();
-}
-template<class T>
-bool DeleteHelper(rpc::EventManager *em, T *s) {
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
-  em->enqueueAfter(std::tr1::bind(&_DeleteHelper<T>, &n, s));
-  return n.tryWait(t+2.5);
-}
-
 shared_ptr<rpc::TcpListenSocket> createListenSocket(
     rpc::EventManager *em, int &port) {
   shared_ptr<rpc::TcpListenSocket> s;

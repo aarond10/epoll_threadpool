@@ -21,11 +21,6 @@ Basic event queing is simple:
     // Execute a function in 10 seconds time.
     em.enqueue(bind(&MyFunction), EventManager::currentTime() + 10.0);
 
-    // Enqueue a function to run after all functions currently running have
-    // completed. (Useful for destroying objects that might be in use at the
-    // time you want to delete them.)
-    em.enqueueAfter(bind(&MyCleanupFunction));
-
     // Stop the event manager's threads. This call is optional. It will be
     // done if required when the EventManager is destroyed.
     em.stop();
@@ -67,6 +62,18 @@ level coding:
   - TcpListenSocket - A listening socket that creates TcpSocket instances when someone connects. Provides an "onAccept" callback.
   - IOBuffer - A buffering I/O class that defers memory copying as long as possible to avoid redundant copy operations. This is designed to make dealing with received data significantly easier.
   - Notification - A simple pthread-based notification class for blocking until triggered. This should *not* be used on worker threads if possible but can be used to safely clean up from the main application thread.
+
+Examples of how to use these classes will eventually arrive here. Until then, there are a bunch of unit tests sitting in the src/ directory that can be used as examples.
+
+Tests
+-----
+
+I haven't bothered with any complex build systems. GNU make and valgrind are all that's required to build and test the library. For the paranoid (like me), you can run repeated tests with valgrind memory testing via:
+
+    make long_test
+
+I'm not aware of any bugs but I would certainly be happier with more thorough unit tests. These will also probably appear with time but if you find this library useful, I'd certainly appreciate payback in the form of additional unit test patches. :)
+
 
 Dependencies
 ------------
