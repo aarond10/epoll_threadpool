@@ -162,6 +162,7 @@ class TcpSocket {
   TcpSocket(EventManager *em, int fd);
 
  private:
+  // Bad constructors not implemented.
   TcpSocket(const TcpSocket&);
 };
 
@@ -222,10 +223,10 @@ class TcpListenSocket {
   };
   shared_ptr<Internal> _internal;
 
-  TcpListenSocket();
   TcpListenSocket(EventManager *em, int fd);
 
  private:
+  // Bad constructors not implemented.
   TcpListenSocket(const TcpListenSocket&);
 };
 
