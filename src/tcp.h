@@ -201,7 +201,9 @@ class TcpListenSocket {
   EventManager *getEventManager() const { return _internal->_em; }
 
  private:
-  class Internal : public std::tr1::enable_shared_from_this<Internal> {
+   // Because we need to preserve data structures until we can be sure they
+   // aren't in use on worker threads, we store them separately.
+   class Internal : public std::tr1::enable_shared_from_this<Internal> {
    public:
     Internal(EventManager *em, int fd);
     ~Internal();
