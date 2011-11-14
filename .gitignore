@@ -1,0 +1,5 @@
+*.o
+*.a
+*_test
+src/lib
+src/include

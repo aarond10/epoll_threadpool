@@ -1,10 +1,11 @@
 CPPFLAGS = -g
 LDFLAGS = -lpthread -lstdc++ -lglog -lgtest -lgtest_main
 
-all: iobuffer_test eventmanager_test tcp_test
+all: iobuffer_test eventmanager_test tcp_test lib include
 
 clean:
-	rm -f *.o iobuffer_test eventmanager_test tcp_test
+	rm -f *.o iobuffer_test eventmanager_test tcp_test 
+	rm -rf lib include
 
 iobuffer_test: iobuffer_test.o
 	g++ -o $@ $^ $(LDFLAGS)
@@ -14,6 +15,16 @@ eventmanager_test: eventmanager.o eventmanager_test.o
 
 tcp_test: eventmanager.o tcp.o tcp_test.o
 	g++ -o $@ $^ $(LDFLAGS)
+
+.PHONY: lib
+lib: eventmanager.o tcp.o
+	mkdir -p lib
+	ar cr lib/libepoll_threadpool.a $^
+
+.PHONY: include
+include: eventmanager.h iobuffer.h notification.h tcp.h
+	mkdir -p include/epoll_threadpool
+	cp $^ include/epoll_threadpool
 
 test: all
 	valgrind -v --track-origins=yes --leak-check=full --show-reachable=yes ./iobuffer_test --gtest_break_on_failure 
