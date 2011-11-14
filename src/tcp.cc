@@ -36,7 +36,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 
-namespace rpc {
+namespace epoll_threadpool {
 
 using namespace std::tr1;
 

@@ -34,7 +34,7 @@
 #include <deque>
 #include <vector>
 
-namespace rpc {
+namespace epoll_threadpool {
 
 using std::deque;
 using std::vector;

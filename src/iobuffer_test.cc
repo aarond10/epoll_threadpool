@@ -30,10 +30,11 @@
 #include <gtest/gtest.h>
 #include <string>
 
+using epoll_threadpool::IOBuffer;
 using std::string;
 
 TEST(IOBufferTest, AppendBytes) {
-  rpc::IOBuffer buf;
+  IOBuffer buf;
   const char *a = "abc", *b = "def";
 
   buf.append(a, 3);
@@ -52,7 +53,7 @@ TEST(IOBufferTest, AppendBytes) {
 }
 
 TEST(IOBufferTest, ConsumeBeforePullDown) {
-  rpc::IOBuffer buf;
+  IOBuffer buf;
   const char *a = "abc", *b = "def";
 
   buf.append(a, 3);

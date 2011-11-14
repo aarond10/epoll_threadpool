@@ -32,7 +32,6 @@
 #include <functional>
 #include <tr1/memory>
 #include <string>
-//#include <tr1/shared_ptr.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -43,7 +42,7 @@
 #include "eventmanager.h"
 #include "iobuffer.h"
 
-namespace rpc {
+namespace epoll_threadpool {
 
 using namespace std;
 using namespace std::tr1;

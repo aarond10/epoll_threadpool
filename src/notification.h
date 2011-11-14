@@ -32,7 +32,7 @@
 #include "eventmanager.h"
 #include <glog/logging.h>
 
-namespace rpc {
+namespace epoll_threadpool {
 
 /**
  * Simple pthread based notification object.

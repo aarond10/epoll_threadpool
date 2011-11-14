@@ -39,7 +39,7 @@
 
 using std::tr1::function;
 
-namespace rpc {
+namespace epoll_threadpool {
 
 EventManager::EventManager() : _is_running(false) {
   pthread_mutex_init(&_mutex, 0);

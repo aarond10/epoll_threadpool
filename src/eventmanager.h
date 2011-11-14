@@ -39,7 +39,7 @@
 #include <pthread.h>
 #include <stdint.h>
 
-namespace rpc {
+namespace epoll_threadpool {
 
 using namespace std;
 using std::tr1::function;

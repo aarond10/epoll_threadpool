@@ -35,8 +35,11 @@
 #include "eventmanager.h"
 #include "notification.h"
 
+using epoll_threadpool::EventManager;
+using epoll_threadpool::Notification;
+
 TEST(EventManagerTest, StartStop) {
-  rpc::EventManager em;
+  EventManager em;
 
   ASSERT_TRUE(em.start(10));
   em.stop();
@@ -46,62 +49,62 @@ TEST(EventManagerTest, StartStop) {
 }
 
 TEST(EventManagerTest, NotificationDelayedRaise) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(10));
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n), t+0.001);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
 
 TEST(EventManagerTest, NotificationPreDelayRaise) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(10));
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n));
+  em.enqueue(std::tr1::bind(&Notification::signal, &n));
   usleep(10);
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
 
 TEST(EventManagerTest, StartEnqueueStop) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   em.start(4);
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n));
+  em.enqueue(std::tr1::bind(&Notification::signal, &n));
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
 
 TEST(EventManagerTest, StartEnqueueStop2) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   em.start(8);
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n), t+0.001);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
   n.wait();
   em.stop();
 }
 
 TEST(EventManagerTest, StartEnqueueStop3) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   em.start(8);
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n), t+0.020);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.020);
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
 
-void EnqueuedCountCheck(pthread_mutex_t *mutex, int *cnt, rpc::Notification *n, int expected) {
+void EnqueuedCountCheck(pthread_mutex_t *mutex, int *cnt, Notification *n, int expected) {
   pthread_mutex_lock(mutex);
   EXPECT_EQ(expected, *cnt);
   (*cnt)++;
@@ -112,9 +115,9 @@ void EnqueuedCountCheck(pthread_mutex_t *mutex, int *cnt, rpc::Notification *n, 
 }
 
 TEST(EventManagerTest, StartEnqueueStop4) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   pthread_mutex_t mutex;
   pthread_mutex_init(&mutex, 0);
@@ -127,10 +130,10 @@ TEST(EventManagerTest, StartEnqueueStop4) {
   ASSERT_LT(t+0.004, t+0.005);
 
   em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, &n, 5), t+0.005);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (rpc::Notification *)NULL, 4), t+0.004);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (rpc::Notification *)NULL, 2), t+0.002);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (rpc::Notification *)NULL, 1), t+0.001);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (rpc::Notification *)NULL, 3), t+0.003);
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 4), t+0.004);
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 2), t+0.002);
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 1), t+0.001);
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 3), t+0.003);
 
   // We start this AFTER adding the tasks to ensure we don't start one before we've added them all.
   em.start(1);
@@ -146,25 +149,25 @@ void EnqueuedAfterCheck(volatile bool *flag) {
   EXPECT_EQ(*flag, flagcpy);
 }
 
-void EnqueuedAfterCheck2(volatile bool *flag, rpc::Notification *n) {
+void EnqueuedAfterCheck2(volatile bool *flag, Notification *n) {
   *flag = true;
   if (n) {
     n->signal();
   }
 }
 
-void WorkerStartStop(rpc::EventManager *em) {
+void WorkerStartStop(EventManager *em) {
   ASSERT_FALSE(em->start(4));
   ASSERT_FALSE(em->stop());
 }
 
 TEST(EventManagerTest, CallMethodsFromWorkerThread) {
-  rpc::EventManager em;
-  rpc::Notification n;
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
 
   em.enqueue(std::tr1::bind(&WorkerStartStop, &em));
-  em.enqueue(std::tr1::bind(&rpc::Notification::signal, &n), t + 0.001);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t + 0.001);
   ASSERT_TRUE(em.start(1));
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();

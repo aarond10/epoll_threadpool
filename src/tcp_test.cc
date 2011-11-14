@@ -38,38 +38,44 @@
 #include "notification.h"
 #include "tcp.h"
 
+using epoll_threadpool::EventManager;
+using epoll_threadpool::IOBuffer;
+using epoll_threadpool::Notification;
+using epoll_threadpool::TcpSocket;
+using epoll_threadpool::TcpListenSocket;
+
 using namespace std;
 using namespace std::tr1;
 using namespace std::tr1::placeholders;
 
-shared_ptr<rpc::TcpListenSocket> createListenSocket(
-    rpc::EventManager *em, int &port) {
-  shared_ptr<rpc::TcpListenSocket> s;
+shared_ptr<TcpListenSocket> createListenSocket(
+    EventManager *em, int &port) {
+  shared_ptr<TcpListenSocket> s;
   while(!s) {
     port = (rand()%40000) + 1024;
-    s = rpc::TcpListenSocket::create(em, port);
+    s = TcpListenSocket::create(em, port);
   }
   return s;
 }
 
 // Code coverage - test basic creation and listening functionality.
 TEST(TCPTest, ListenTest) {
-  rpc::EventManager em;
+  EventManager em;
   em.start(4);
   int port = 0;
-  shared_ptr<rpc::TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
   ASSERT_TRUE(s != NULL);
 }
 
 // Code coverage - test connect and failed connect code paths.
 TEST(TCPTest, ListenConnectTest) {
-  rpc::EventManager em;
+  EventManager em;
   em.start(4);
 
   int port = 0;
-  shared_ptr<rpc::TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
   //s->start();
-  shared_ptr<rpc::TcpSocket> c = rpc::TcpSocket::connect(&em, "127.0.0.1", port);
+  shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(s);
   ASSERT_TRUE(c);
 
@@ -77,7 +83,7 @@ TEST(TCPTest, ListenConnectTest) {
   // use so we try a few times before failing
   bool found = false;
   for (int i = 1; i < 4 && !found; i++) {
-    shared_ptr<rpc::TcpSocket> c2 = rpc::TcpSocket::connect(&em, "127.0.0.1", port+i);
+    shared_ptr<TcpSocket> c2 = TcpSocket::connect(&em, "127.0.0.1", port+i);
     if (!c2) {
       found = true;
     }
@@ -85,7 +91,7 @@ TEST(TCPTest, ListenConnectTest) {
   ASSERT_TRUE(found);
 }
 
-void receiveChecker(rpc::Notification *n, string expected, rpc::IOBuffer *data) {
+void receiveChecker(Notification *n, string expected, IOBuffer *data) {
   uint64_t *psize = (uint64_t *)(data->pulldown(sizeof(uint64_t)));
   if (psize != NULL && *psize > 0 && data->size() >= *psize) {
     uint64_t size = *psize;
@@ -98,7 +104,7 @@ void receiveChecker(rpc::Notification *n, string expected, rpc::IOBuffer *data) 
   }
 }
 
-void acceptHandler(rpc::Notification *n, string expected, shared_ptr<rpc::TcpSocket> *ps, shared_ptr<rpc::TcpSocket> s) {
+void acceptHandler(Notification *n, string expected, shared_ptr<TcpSocket> *ps, shared_ptr<TcpSocket> s) {
   *ps = s;
   s->setReceiveCallback(std::tr1::bind(&receiveChecker, n, expected, _1));
   s->start();
@@ -106,29 +112,29 @@ void acceptHandler(rpc::Notification *n, string expected, shared_ptr<rpc::TcpSoc
 
 // Code coverage - tests we can accept data from a newly connected client
 TEST(TCPTest, ListenConnectSendDataTest) {
-  rpc::EventManager em;
+  EventManager em;
   em.start(4);
 
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager::WallTime t = EventManager::currentTime();
   const char *data = "some test data";
   uint64_t size = strlen(data);
 
   int port = 0;
-  shared_ptr<rpc::TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
 
-  rpc::Notification n;
-  shared_ptr<rpc::TcpSocket> ps;
+  Notification n;
+  shared_ptr<TcpSocket> ps;
   s->setAcceptCallback(std::tr1::bind(&acceptHandler, &n, string(data), &ps, _1));
   //s->start();
 
-  shared_ptr<rpc::TcpSocket> c = rpc::TcpSocket::connect(&em, "127.0.0.1", port);
+  shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(c != NULL);
   c->start();
 
   ASSERT_FALSE(n.tryWait(t+0.001));
-  c->write(new rpc::IOBuffer((char *)&size, sizeof(size)));
+  c->write(new IOBuffer((char *)&size, sizeof(size)));
   ASSERT_FALSE(n.tryWait(t+0.002));
-  c->write(new rpc::IOBuffer(data, size));
+  c->write(new IOBuffer(data, size));
   ASSERT_TRUE(n.tryWait(t+10.0));
   ASSERT_TRUE(ps != NULL);
 
@@ -136,11 +142,11 @@ TEST(TCPTest, ListenConnectSendDataTest) {
   ps->disconnect();
 }
 
-void disconnectChecker(rpc::Notification *n) {
+void disconnectChecker(Notification *n) {
   n->signal();
 }
 
-void acceptDisconnectHandler(rpc::Notification *n, shared_ptr<rpc::TcpSocket> *ps, shared_ptr<rpc::TcpSocket> s) {
+void acceptDisconnectHandler(Notification *n, shared_ptr<TcpSocket> *ps, shared_ptr<TcpSocket> s) {
   *ps = s;
   s->setDisconnectCallback(std::tr1::bind(&disconnectChecker, n));
   s->start();
@@ -148,22 +154,22 @@ void acceptDisconnectHandler(rpc::Notification *n, shared_ptr<rpc::TcpSocket> *p
 
 // Code coverage - test disconnect handler.
 TEST(TCPTest, ListenConnectDisconnectTest) {
-  rpc::EventManager em;
+  EventManager em;
   em.start(4);
 
-  rpc::EventManager::WallTime t = rpc::EventManager::currentTime();
+  EventManager::WallTime t = EventManager::currentTime();
   const char *data = "some test data";
   uint64_t size = strlen(data);
 
   int port = 0;
-  shared_ptr<rpc::TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
 
-  rpc::Notification n;
-  shared_ptr<rpc::TcpSocket> ps;
+  Notification n;
+  shared_ptr<TcpSocket> ps;
   s->setAcceptCallback(std::tr1::bind(&acceptDisconnectHandler, &n, &ps, _1));
   //s->start();
 
-  shared_ptr<rpc::TcpSocket> c = rpc::TcpSocket::connect(&em, "127.0.0.1", port);
+  shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(c != NULL);
 
   ASSERT_FALSE(n.tryWait(t+0.001));
@@ -174,7 +180,7 @@ TEST(TCPTest, ListenConnectDisconnectTest) {
   ps->disconnect();
 }
 
-void acceptConnectionCallback(shared_ptr<rpc::TcpSocket> s) {
+void acceptConnectionCallback(shared_ptr<TcpSocket> s) {
   // This does nothing but because we don't store the TcpSocket, it will cause
   // it to get destroyed, immediately disconnecting the endpoint.
   //LOG(INFO) << "Doing nothing";
@@ -182,18 +188,18 @@ void acceptConnectionCallback(shared_ptr<rpc::TcpSocket> s) {
 
 // Order of operations - write before start.
 TEST(TCPTest, WriteBeforeStartedClient) {
-  rpc::EventManager em;
+  EventManager em;
   em.start(4);  // TODO(aarond10): I suspect a memory barrier issue with enqueueAfter.
 
   int port = 0;
-  shared_ptr<rpc::TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
   s->setAcceptCallback(std::tr1::bind(&acceptConnectionCallback, std::tr1::placeholders::_1));
   //s->start();
 
-  shared_ptr<rpc::TcpSocket> t(rpc::TcpSocket::connect(&em, "127.0.0.1", port));
-  rpc::Notification n;
-  t->setDisconnectCallback(std::tr1::bind(&rpc::Notification::signal, &n));
-  t->write(new rpc::IOBuffer("abcd", 4));
+  shared_ptr<TcpSocket> t(TcpSocket::connect(&em, "127.0.0.1", port));
+  Notification n;
+  t->setDisconnectCallback(std::tr1::bind(&Notification::signal, &n));
+  t->write(new IOBuffer("abcd", 4));
   t->start();
   n.wait();
 }
