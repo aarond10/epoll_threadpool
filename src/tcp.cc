@@ -27,20 +27,20 @@
  THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include "tcp.h"
-
 #include "notification.h"
-
-#include <glog/logging.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
 
+#include <glog/logging.h>
+
 namespace epoll_threadpool {
 
-using namespace std::tr1;
+using std::tr1::function;
+using std::tr1::bind;
 
-TcpSocket::TcpSocket(EventManager *em, int fd)
+TcpSocket::TcpSocket(EventManager* em, int fd)
     : _internal(new Internal(em, fd)) {
 }
 
@@ -49,7 +49,7 @@ TcpSocket::~TcpSocket() {
   disconnect();
 }
 
-TcpSocket::Internal::Internal(EventManager *em, int fd)
+TcpSocket::Internal::Internal(EventManager* em, int fd)
     : _em(em), _fd(fd), _isStarted(false) {
   pthread_mutex_init(&_mutex, 0);
   fcntl(_fd, F_SETFL, O_NONBLOCK);
@@ -59,27 +59,27 @@ TcpSocket::Internal::~Internal() {
 }
 
 void TcpSocket::start() {
-  _internal->_start();
+  _internal->start();
 }
 
-void TcpSocket::Internal::_start() {
+void TcpSocket::Internal::start() {
   pthread_mutex_lock(&_mutex);
   if (!_isStarted) {
     _isStarted = true;
     if (_fd > 0) {
       _em->watchFd(_fd, EPOLLIN,
-          std::tr1::bind(&TcpSocket::Internal::onReceive, shared_from_this()));
+          bind(&TcpSocket::Internal::onReceive, shared_from_this()));
       _em->watchFd(_fd, EPOLLRDHUP,
-          std::tr1::bind(&TcpSocket::Internal::onDisconnect, shared_from_this()));
+          bind(&TcpSocket::Internal::disconnect, shared_from_this()));
       _em->watchFd(_fd, EPOLLOUT,
-          std::tr1::bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
+          bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
       _em->watchFd(_fd, EPOLLHUP,
-          std::tr1::bind(&TcpSocket::Internal::onDisconnect, shared_from_this()));
+          bind(&TcpSocket::Internal::disconnect, shared_from_this()));
 
       // We trigger the receive handler to handle the case where we got
       // disconnected before start() completed.
       _em->enqueue(
-          std::tr1::bind(&TcpSocket::Internal::onReceive, shared_from_this()));
+          bind(&TcpSocket::Internal::onReceive, shared_from_this()));
     } else {
       if (_disconnectCallback) {
         _em->enqueue(_disconnectCallback);
@@ -89,11 +89,12 @@ void TcpSocket::Internal::_start() {
   pthread_mutex_unlock(&_mutex);
 }
 
-shared_ptr<TcpSocket> TcpSocket::connect(EventManager *em, string host, uint16_t port) {
+shared_ptr<TcpSocket> TcpSocket::connect(
+    EventManager* em, string host, uint16_t port) {
   struct sockaddr_in sa;
   int fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-  if(fd == -1) {
+  if (fd == -1) {
     LOG(ERROR) << "can not create socket";
     return shared_ptr<TcpSocket>();
   }
@@ -101,14 +102,13 @@ shared_ptr<TcpSocket> TcpSocket::connect(EventManager *em, string host, uint16_t
   memset(&sa, 0, sizeof(sa));
   sa.sin_family = AF_INET;
   sa.sin_port = htons(port);
-  if(inet_pton(AF_INET, host.c_str(), &sa.sin_addr) <= 0) {
+  if (inet_pton(AF_INET, host.c_str(), &sa.sin_addr) <= 0) {
     LOG(ERROR) << "Failed to resolve address: " << host;
     close(fd);
     return shared_ptr<TcpSocket>();
   }
 
-  if(::connect(fd, (struct sockaddr*)&sa, sizeof(sa)) == -1) {
-    //DLOG(ERROR) << "error connect failed";
+  if (::connect(fd, (struct sockaddr*)&sa, sizeof(sa)) == -1) {
     close(fd);
     return shared_ptr<TcpSocket>();
   }
@@ -116,22 +116,41 @@ shared_ptr<TcpSocket> TcpSocket::connect(EventManager *em, string host, uint16_t
   return shared_ptr<TcpSocket>(new TcpSocket(em, fd));
 }
 
-void TcpSocket::write(IOBuffer *data) {
-  pthread_mutex_lock(&_internal->_mutex);
-  _internal->_sendBuffer.append(data);
-  if (_internal->_isStarted) {
-    _internal->_onCanSend();
-  }
-  pthread_mutex_unlock(&_internal->_mutex);
+void TcpSocket::write(IOBuffer* data) {
+  _internal->write(data);
 }
 
 void TcpSocket::disconnect() {
+  _internal->disconnect();
+}
+
+bool TcpSocket::isDisconnected() const {
+  return _internal->_fd == -1;
+}
+
+void TcpSocket::setReceiveCallback(function<void(IOBuffer*)> callback) {
   pthread_mutex_lock(&_internal->_mutex);
-  _internal->_disconnect();
+  _internal->_recvCallback = callback;
   pthread_mutex_unlock(&_internal->_mutex);
 }
 
-void TcpSocket::Internal::_disconnect() {
+void TcpSocket::setDisconnectCallback(function<void()> callback) {
+  pthread_mutex_lock(&_internal->_mutex);
+  _internal->_disconnectCallback = callback;
+  pthread_mutex_unlock(&_internal->_mutex);
+}
+
+void TcpSocket::Internal::write(IOBuffer* data) {
+  pthread_mutex_lock(&_mutex);
+  _sendBuffer.append(data);
+  if (_isStarted) {
+    _em->enqueue(bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
+  }
+  pthread_mutex_unlock(&_mutex);
+}
+
+void TcpSocket::Internal::disconnect() {
+  pthread_mutex_lock(&_mutex);
   if (_fd > 0) {
     _em->removeFd(_fd, EPOLLIN);
     _em->removeFd(_fd, EPOLLRDHUP);
@@ -144,45 +163,13 @@ void TcpSocket::Internal::_disconnect() {
       _em->enqueue(_disconnectCallback);
     }
   }
-}
-
-bool TcpSocket::isDisconnected() const {
-  return _internal->_fd == -1;
-}
-
-void TcpSocket::setReceiveCallback(std::tr1::function<void(IOBuffer*)> callback) {
-  pthread_mutex_lock(&_internal->_mutex);
-  _internal->_recvCallback = callback;
-  pthread_mutex_unlock(&_internal->_mutex);
-}
-
-void TcpSocket::setDisconnectCallback(std::tr1::function<void()> callback) {
-  pthread_mutex_lock(&_internal->_mutex);
-  _internal->_disconnectCallback = callback;
-  pthread_mutex_unlock(&_internal->_mutex);
+  pthread_mutex_unlock(&_mutex);
 }
 
 void TcpSocket::Internal::onReceive() {
   pthread_mutex_lock(&_mutex);
-  _onReceive();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::onCanSend() {
-  pthread_mutex_lock(&_mutex);
-  _onCanSend();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::onDisconnect() {
-  pthread_mutex_lock(&_mutex);
-  _disconnect();
-  pthread_mutex_unlock(&_mutex);
-}
-
-void TcpSocket::Internal::_onReceive() {
   if (_fd > 0) {
-    vector<char> *buf = new vector<char>();
+    vector<char>* buf = new vector<char>();
     buf->resize(4096);
 
     int r = ::read(_fd, &(*buf)[0], buf->size());
@@ -194,43 +181,53 @@ void TcpSocket::Internal::_onReceive() {
       }
     } else if (r < 0) {
       delete buf;
-      if(errno != EAGAIN) {
+      if (errno != EAGAIN) {
         LOG(INFO) << "Read error. (" << errno << "). Disconnecting fd " << _fd;
-        _em->enqueue(std::tr1::bind(&TcpSocket::Internal::onDisconnect, shared_from_this()));
+        _em->enqueue(bind(
+            &TcpSocket::Internal::disconnect, shared_from_this()));
       }
     } else {
       delete buf;
-      _em->enqueue(std::tr1::bind(&TcpSocket::Internal::onDisconnect, shared_from_this()));
+      _em->enqueue(bind(
+          &TcpSocket::Internal::disconnect, shared_from_this()));
     }
   }
+  pthread_mutex_unlock(&_mutex);
 }
 
-void TcpSocket::Internal::_onCanSend() {
+void TcpSocket::Internal::onCanSend() {
+  pthread_mutex_lock(&_mutex);
   if (_fd > 0 && _sendBuffer.size()) {
     int sz = _sendBuffer.size() > 4096 ? 4096 : _sendBuffer.size();
-    const char *buf = _sendBuffer.pulldown(sz);
+    const char* buf = _sendBuffer.pulldown(sz);
     if (buf) {
       int r = ::write(_fd, buf, sz);
       if (r > 0) {
         _sendBuffer.consume(r);
       } else {
         LOG(ERROR) << "Write error. Returned " << r << ". Disconnecting.";
-        _disconnect();
+        pthread_mutex_unlock(&_mutex);
+        // since we only ever run on a worker thread, we can safely call
+        // disconnect without using enqueue()
+        disconnect();
+        return;
       }
     }
   }
+  pthread_mutex_unlock(&_mutex);
 }
 
-TcpListenSocket::TcpListenSocket(EventManager *em, int fd)
+TcpListenSocket::TcpListenSocket(EventManager* em, int fd)
     : _internal(new Internal(em, fd)) {
-  em->watchFd(fd, EPOLLIN, std::tr1::bind(&TcpListenSocket::Internal::onAccept, _internal));
+  em->watchFd(fd, EPOLLIN, bind(
+      &TcpListenSocket::Internal::onAccept, _internal));
 }
 
 TcpListenSocket::~TcpListenSocket() {
   _internal->shutdown();
 }
 
-TcpListenSocket::Internal::Internal(EventManager *em, int fd)
+TcpListenSocket::Internal::Internal(EventManager* em, int fd)
     : _em(em), _fd(fd) {
   pthread_mutex_init(&_mutex, 0);
   fcntl(_fd, F_SETFL, O_NONBLOCK);
@@ -249,11 +246,12 @@ void TcpListenSocket::Internal::shutdown() {
   pthread_mutex_unlock(&_mutex);
 }
 
-shared_ptr<TcpListenSocket> TcpListenSocket::create(EventManager *em, uint16_t port) {
+shared_ptr<TcpListenSocket> TcpListenSocket::create(
+    EventManager* em, uint16_t port) {
   struct sockaddr_in sa;
   int fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-  if(fd == -1) {
+  if (fd == -1) {
     LOG(ERROR) << "can not create socket";
     return shared_ptr<TcpListenSocket>();
   }
@@ -263,13 +261,13 @@ shared_ptr<TcpListenSocket> TcpListenSocket::create(EventManager *em, uint16_t p
   sa.sin_port = htons(port);
   sa.sin_addr.s_addr = INADDR_ANY;
 
-  if(::bind(fd,(struct sockaddr *)&sa, sizeof(sa)) == -1) {
+  if (::bind(fd, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
     LOG(ERROR) << "error bind failed";
     close(fd);
     return shared_ptr<TcpListenSocket>();
   }
 
-  if(::listen(fd, 5) == -1) {
+  if (::listen(fd, 5) == -1) {
     LOG(ERROR) << "error listen failed";
     close(fd);
     return shared_ptr<TcpListenSocket>();
@@ -279,7 +277,7 @@ shared_ptr<TcpListenSocket> TcpListenSocket::create(EventManager *em, uint16_t p
 }
 
 void TcpListenSocket::setAcceptCallback(
-    std::tr1::function<void(shared_ptr<TcpSocket>)> callback) {
+    function<void(shared_ptr<TcpSocket>)> callback) {
   pthread_mutex_lock(&_internal->_mutex);
   _internal->_callback = callback;
   pthread_mutex_unlock(&_internal->_mutex);

@@ -29,9 +29,8 @@
 #ifndef _RPC_TCP_H_
 #define _RPC_TCP_H_
 
-#include <functional>
-#include <tr1/memory>
-#include <string>
+#include "eventmanager.h"
+#include "iobuffer.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -39,13 +38,16 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
-#include "eventmanager.h"
-#include "iobuffer.h"
+#include <functional>
+#include <tr1/memory>
+#include <string>
 
 namespace epoll_threadpool {
 
-using namespace std;
-using namespace std::tr1;
+using std::string;
+using std::tr1::bind;
+using std::tr1::function;
+using std::tr1::shared_ptr;
 
 class TcpListenSocket;
 
@@ -63,10 +65,11 @@ class TcpListenSocket;
  * user a chance to set up callbacks safely without missing potential events.
  *
  * After a sockets disconnect callback has been triggered, we guarantee that no
- * subsequent callbacks will be triggered and thus that the object can be 
+ * subsequent callbacks will be triggered and thus that the object can be
  * safely deleted (by reset()ing or otherwise letting shared_ptr's to the
  * object fall out of scope).
  *
+ * TODO(aarond10): Confirm and add test cases for the following:
  * Both disconnect and receive callbacks are guaranteed to run on one of socket
  * EventManager's threads. As a general rule of thumb, these functions should
  * not block as the EventManager's thread pool is of limited size.
@@ -83,10 +86,10 @@ class TcpSocket {
    * connection. If a connection cannot be made, returns NULL.
    */
   static shared_ptr<TcpSocket> connect(
-      EventManager *em, string host, uint16_t port);
+      EventManager* em, string host, uint16_t port);
 
   /**
-   * Called to begin the event handling. 
+   * Called to begin the event handling.
    * This should be called exactly once. It is done explicitly to give
    * sockets a chance to set up event callbacks.
    */
@@ -96,7 +99,7 @@ class TcpSocket {
    * Writes data to the TCP stream.
    * This class takes ownership of the provided IOBuffer instance.
    */
-  void write(IOBuffer *data);
+  void write(IOBuffer* data);
 
   /**
    * Disconnects the socket endpoint. No further events will be triggered.
@@ -123,17 +126,17 @@ class TcpSocket {
   /**
    * Returns the eventmanager for this class.
    */
-  EventManager *getEventManager() const { return _internal->_em; }
+  EventManager* getEventManager() const { return _internal->_em; }
 
  private:
   // Because we need to preserve data structures until we can be sure they
   // aren't in use on worker threads, we store them separately.
   class Internal : public std::tr1::enable_shared_from_this<Internal> {
    public:
-    Internal(EventManager *em, int fd);
+    Internal(EventManager* em, int fd);
     ~Internal();
     pthread_mutex_t _mutex;
-    EventManager *_em;
+    EventManager* _em;
     int _fd;
     volatile bool _isStarted;
     IOBuffer _recvBuffer;
@@ -141,14 +144,11 @@ class TcpSocket {
     function<void(IOBuffer*)> _recvCallback;
     function<void()> _disconnectCallback;
 
-    void _start();
-    void _disconnect();
-    void _onReceive();
-    void _onCanSend();
-  
+    void start();
+    void write(IOBuffer* data);
+    void disconnect();
     void onReceive();
     void onCanSend();
-    void onDisconnect();
 
     static void cleanup(shared_ptr<Internal> ptr) {
       ptr.reset();
@@ -157,19 +157,20 @@ class TcpSocket {
   shared_ptr<Internal> _internal;
 
   friend class TcpListenSocket;
-  TcpSocket(EventManager *em, int fd);
+  TcpSocket(EventManager* em, int fd);
 
  private:
+  // Bad constructors not implemented.
   TcpSocket(const TcpSocket&);
 };
 
 /**
  * Represents a TCP listening socket on a specific TCP port.
  *
- * When a connection is made to the socket, it will be accepted and a 
+ * When a connection is made to the socket, it will be accepted and a
  * shared_ptr<TcpSocket> passed to the registered accept callback.
  * If an accept callback has not been set, the TcpSocket will end up being
- * dereferenced to zero and deleted. 
+ * dereferenced to zero and deleted.
  *
  * It is the callback's responsibility to set up any event handlers on the
  * TcpSocket and then call its start() method to begin receiving events.
@@ -184,7 +185,7 @@ class TcpListenSocket {
    * Returns a pointer to a new TcpListenSocket object on success, NULL on
    * failure.
    */
-  static shared_ptr<TcpListenSocket> create(EventManager *em, uint16_t port);
+  static shared_ptr<TcpListenSocket> create(EventManager* em, uint16_t port);
 
   /**
    * Registers a callback to be triggered when a new client connects.
@@ -196,12 +197,14 @@ class TcpListenSocket {
   /**
    * Returns the eventmanager for this class.
    */
-  EventManager *getEventManager() const { return _internal->_em; }
+  EventManager* getEventManager() const { return _internal->_em; }
 
  private:
+  // Because we need to preserve data structures until we can be sure they
+  // aren't in use on worker threads, we store them separately.
   class Internal : public std::tr1::enable_shared_from_this<Internal> {
    public:
-    Internal(EventManager *em, int fd);
+    Internal(EventManager* em, int fd);
     ~Internal();
 
     pthread_mutex_t _mutex;
@@ -218,13 +221,11 @@ class TcpListenSocket {
   };
   shared_ptr<Internal> _internal;
 
-  TcpListenSocket();
-  TcpListenSocket(EventManager *em, int fd);
+  TcpListenSocket(EventManager* em, int fd);
 
  private:
+  // Bad constructors not implemented.
   TcpListenSocket(const TcpListenSocket&);
 };
-
 }
-
 #endif
