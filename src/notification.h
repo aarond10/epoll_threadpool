@@ -78,11 +78,36 @@ class Notification {
     int ret = pthread_cond_wait(&_cond, &_mutex);
     pthread_mutex_unlock(&_mutex);
   }
- private:
+ protected:
   volatile bool _signaled;
   pthread_mutex_t _mutex;
   pthread_cond_t _cond;
 };
-}
 
+/**
+ * Similar to Notification but required a set number of calls to signal() 
+ * before becoming 'signalled'.
+ * TODO(aarond10): Fix terminology. Overloaded use of the word "signal".
+ */
+class CountingNotification : public Notification {
+ public:
+  /**
+   * Creates a notification that will only be signalled after num calls to
+   * signal().
+   */
+  CountingNotification(int num) : _num(num) { }
+  virtual ~CountingNotification() { }
+
+  void signal() {
+    pthread_mutex_lock(&_mutex);
+    if (--_num <= 0) {
+      _signaled = true;
+      pthread_cond_broadcast(&_cond);
+    }
+    pthread_mutex_unlock(&_mutex);
+  }
+ private:
+  int _num;
+};
+}
 #endif

@@ -83,6 +83,7 @@ void TcpSocket::Internal::start() {
     } else {
       if (_disconnectCallback) {
         _em->enqueue(_disconnectCallback);
+        _disconnectCallback = NULL;
       }
     }
   }
@@ -142,8 +143,9 @@ void TcpSocket::setDisconnectCallback(function<void()> callback) {
 
 void TcpSocket::Internal::write(IOBuffer* data) {
   pthread_mutex_lock(&_mutex);
+  bool wasBufferEmpty = (_sendBuffer.size() == 0);
   _sendBuffer.append(data);
-  if (_isStarted) {
+  if (_isStarted && wasBufferEmpty) {
     _em->enqueue(bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
   }
   pthread_mutex_unlock(&_mutex);
@@ -161,6 +163,7 @@ void TcpSocket::Internal::disconnect() {
     _fd = -1;
     if (_disconnectCallback) {
       _em->enqueue(_disconnectCallback);
+      _disconnectCallback = NULL;
     }
   }
   pthread_mutex_unlock(&_mutex);
@@ -196,23 +199,35 @@ void TcpSocket::Internal::onReceive() {
 }
 
 void TcpSocket::Internal::onCanSend() {
+  const int kMaxSendSize = 4096;
   pthread_mutex_lock(&_mutex);
   if (_fd > 0 && _sendBuffer.size()) {
-    int sz = _sendBuffer.size() > 4096 ? 4096 : _sendBuffer.size();
+    int sz = (_sendBuffer.size() > kMaxSendSize) ? 
+                 kMaxSendSize : _sendBuffer.size();
     const char* buf = _sendBuffer.pulldown(sz);
     if (buf) {
       int r = ::write(_fd, buf, sz);
       if (r > 0) {
         _sendBuffer.consume(r);
       } else {
-        LOG(ERROR) << "Write error. Returned " << r << ". Disconnecting.";
-        pthread_mutex_unlock(&_mutex);
-        // since we only ever run on a worker thread, we can safely call
-        // disconnect without using enqueue()
-        disconnect();
-        return;
+        if (errno != EAGAIN) {
+          LOG(ERROR) << "Write error (" << errno << "). Disconnecting.";
+          pthread_mutex_unlock(&_mutex);
+          // since we only ever run on a worker thread, we can safely call
+          // disconnect without using enqueue()
+          disconnect();
+          return;
+        } else {
+          //LOG(INFO) << "Skipping write due to EAGAIN";
+        }
       }
     }
+/*    LOG(INFO) << "_sendBuffer " << _sendBuffer.size();
+    // Debugging
+    EventManager::WallTime t = EventManager::currentTime();
+    _em->enqueue(bind(&TcpSocket::Internal::onCanSend, shared_from_this()),
+                 t + 1.0);
+*/
   }
   pthread_mutex_unlock(&_mutex);
 }
