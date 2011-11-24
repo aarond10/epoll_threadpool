@@ -264,14 +264,12 @@ void EventManager::thread_main() {
           pthread_mutex_unlock(&_mutex);
           f();
           pthread_mutex_lock(&_mutex);
-          LOG(INFO) << "Finished EM_WRITE";
         } 
         else if ((flags | EPOLLIN) && _fds[fd].find(EM_READ) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_READ];
           pthread_mutex_unlock(&_mutex);
           f();
           pthread_mutex_lock(&_mutex);
-          LOG(INFO) << "Finished EM_READ";
         }
         else if ((flags | EPOLLHUP | EPOLLRDHUP) &&
                  _fds[fd].find(EM_ERROR) != _fds[fd].end()) {
@@ -279,7 +277,6 @@ void EventManager::thread_main() {
           pthread_mutex_unlock(&_mutex);
           f();
           pthread_mutex_lock(&_mutex);
-          LOG(INFO) << "Finished EM_ERROR";
         }
       }
     }
