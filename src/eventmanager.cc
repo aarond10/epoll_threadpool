@@ -37,9 +37,37 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+namespace epoll_threadpool {
+
 using std::tr1::function;
 
-namespace epoll_threadpool {
+namespace {
+inline int getEpollFlags(std::map<int, 
+    std::map<EventManager::EventType, function<void()> > >& fds, int fd) {
+  int flags = 0;
+  if (fds.find(fd) == fds.end()) {
+    return 0;
+  }
+  for (std::map<EventManager::EventType, 
+      function<void()> >::iterator i = fds[fd].begin();
+      i != fds[fd].end(); ++i) {
+    switch (i->first) {
+     case EventManager::EM_READ:
+      flags |= EPOLLIN;
+      break;
+     case EventManager::EM_WRITE:
+      flags |= EPOLLOUT;
+      break;
+     case EventManager::EM_ERROR:
+      flags |= EPOLLRDHUP | EPOLLHUP;
+      break;
+     default:
+      LOG(ERROR) << "Unknown event type " << i->first;
+    };
+  }
+  return flags;
+}
+}  // anonymous namespace
 
 EventManager::EventManager() : _is_running(false) {
   pthread_mutex_init(&_mutex, 0);
@@ -94,6 +122,14 @@ bool EventManager::stop() {
 
   _is_running = false;
 
+  eventfd_write(_event_fd, 1);
+  for (set<pthread_t>::const_iterator i = _thread_set.begin();
+      i != _thread_set.end(); ++i) {
+    pthread_mutex_unlock(&_mutex);
+    pthread_join(*i, NULL);
+    pthread_mutex_lock(&_mutex);
+  }
+
   // Cancel any unprocessed tasks or fds.
   DLOG_IF(WARNING, !_fds.empty()) << "Stopping event manager with attached "
       << "file descriptors. You should consider calling removeFd first.";
@@ -102,13 +138,6 @@ bool EventManager::stop() {
   _fds.clear();
   _tasks.clear();
 
-  eventfd_write(_event_fd, 1);
-  for (set<pthread_t>::const_iterator i = _thread_set.begin();
-      i != _thread_set.end(); ++i) {
-    pthread_mutex_unlock(&_mutex);
-    pthread_join(*i, NULL);
-    pthread_mutex_lock(&_mutex);
-  }
   _thread_set.clear();
   pthread_mutex_unlock(&_mutex);
   return true;
@@ -133,43 +162,55 @@ void EventManager::enqueue(function<void()> f, WallTime when) {
   pthread_mutex_unlock(&_mutex);
 }
 
-bool EventManager::watchFd(int fd, int flags, function<void(int)> f) {
+bool EventManager::watchFd(int fd, EventType type, function<void()> f) {
   pthread_mutex_lock(&_mutex);
-  std::pair<int, int> key(fd, flags);
 
-  if (_fds.find(key) != _fds.end()) {
-    pthread_mutex_unlock(&_mutex);
-    return false;
+  int epoll_op = 0;
+  if (_fds.find(fd) != _fds.end()) {
+    epoll_op = EPOLL_CTL_MOD;
+  } else {
+    epoll_op = EPOLL_CTL_ADD;
   }
+
+  _fds[fd][type] = f;
+
   struct epoll_event ev;
   ev.data.u64 = 0;  // stop valgrind whinging
-  ev.events = flags;
+  ev.events = getEpollFlags(_fds, fd);
   ev.data.fd = fd;
-  epoll_ctl(_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 
-  _fds[key] = f;
+  if (_fds.find(fd) != _fds.end()) {
+    epoll_ctl(_epoll_fd, epoll_op, fd, &ev);
+  } else {
+    epoll_ctl(_epoll_fd, epoll_op, fd, &ev);
+  }
 
   eventfd_write(_event_fd, 1);
   pthread_mutex_unlock(&_mutex);
   return true;
 }
 
-bool EventManager::removeFd(int fd, int flags) {
+bool EventManager::removeFd(int fd, EventType type) {
   pthread_mutex_lock(&_mutex);
-  std::pair<int, int> key(fd, flags);
 
-  if (_fds.find(key) == _fds.end()) {
+  if (_fds.find(fd) == _fds.end()) {
     pthread_mutex_unlock(&_mutex);
     return false;
   }
 
+  _fds[fd].erase(type);
+
   struct epoll_event ev;
   ev.data.u64 = 0;  // stop valgrind whinging
-  ev.events = flags;
+  ev.events = getEpollFlags(_fds, fd);
   ev.data.fd = fd;
-  epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, fd, &ev);
 
-  _fds.erase(key);
+  if (ev.events != 0) {
+    epoll_ctl(_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+  } else {
+    epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+    _fds.erase(fd);
+  }
 
   pthread_mutex_unlock(&_mutex);
   return true;
@@ -210,16 +251,36 @@ void EventManager::thread_main() {
 
     // Execute triggered fd handlers
     for (int i = 0; i < ret; i++) {
-      std::pair<int, int> key(events[i].data.fd, events[i].events);
-      if (_fds.find(key) != _fds.end()) {
-        function<void(int)> f = _fds[key];
-        pthread_mutex_unlock(&_mutex);
-        f(events[i].events);
-        pthread_mutex_lock(&_mutex);
-      } else if(events[i].data.fd == _event_fd) {
+      int fd = events[i].data.fd;
+      int flags = events[i].events;
+
+      if (events[i].data.fd == _event_fd) {
         // just a thread wake-up event. consume and continue.
         uint64_t val;
         int ret = eventfd_read(_event_fd, &val);
+      } else if (_fds.find(fd) != _fds.end()) {
+        if ((flags | EPOLLOUT) && _fds[fd].find(EM_WRITE) != _fds[fd].end()) {
+          function<void()> f = _fds[fd][EM_WRITE];
+          pthread_mutex_unlock(&_mutex);
+          f();
+          pthread_mutex_lock(&_mutex);
+          LOG(INFO) << "Finished EM_WRITE";
+        } 
+        else if ((flags | EPOLLIN) && _fds[fd].find(EM_READ) != _fds[fd].end()) {
+          function<void()> f = _fds[fd][EM_READ];
+          pthread_mutex_unlock(&_mutex);
+          f();
+          pthread_mutex_lock(&_mutex);
+          LOG(INFO) << "Finished EM_READ";
+        }
+        else if ((flags | EPOLLHUP | EPOLLRDHUP) &&
+                 _fds[fd].find(EM_ERROR) != _fds[fd].end()) {
+          function<void()> f = _fds[fd][EM_ERROR];
+          pthread_mutex_unlock(&_mutex);
+          f();
+          pthread_mutex_lock(&_mutex);
+          LOG(INFO) << "Finished EM_ERROR";
+        }
       }
     }
 

@@ -52,6 +52,17 @@ class EventManager {
  public:
   typedef double WallTime;
 
+  /**
+   * These represent the type of events a user can watch for on a file 
+   * descriptor.
+   * @see watchFd removeFd
+   */
+  enum EventType {
+    EM_READ,
+    EM_WRITE,
+    EM_ERROR
+  };
+
   EventManager();
   virtual ~EventManager();
 
@@ -93,19 +104,20 @@ class EventManager {
   void enqueue(function<void()> f, WallTime when);
 
   /**
-   * Watches a given file descriptor for activity and triggers a callback when
-   * an event occurs. The flags argument is the bitwise OR of the appropriate 
-   * EPOLL* flags. See epoll.h for more details.
+   * Watches for activity on a given file descriptor and triggers a callback 
+   * when an event occurs. (fd, type) can be considered a tuple. To watch
+   * a file descriptor for multiple events, you must call this function
+   * multiple times. 
    * It is safe to call this function from a worker thread itself.
    */
-  bool watchFd(int fd, int flags, function<void(int)> f);
+  bool watchFd(int fd, EventType type, function<void()> f);
   
   /**
-   * Stops triggering callbacks when events occur for a given FD.
-   * The flags argument should match that passed in to watchFd.
+   * Stops triggering callbacks when a given event type occurs for a given FD.
+   * The type argument should match that passed in to watchFd.
    * It is safe to call this function from a worker thread itself.
    */
-  bool removeFd(int fd, int flags);
+  bool removeFd(int fd, EventType type);
 
  private:
   // Stores a scheduled task callback.
@@ -127,7 +139,7 @@ class EventManager {
   std::set<pthread_t> _thread_set;
   
   std::vector<Task> _tasks;
-  std::map< std::pair<int, int>, function<void(int)> > _fds;
+  std::map<int, std::map<EventType, function<void()> > > _fds;
 
   static void* trampoline(void *arg);
   void thread_main();

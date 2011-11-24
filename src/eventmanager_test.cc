@@ -27,8 +27,7 @@
  THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <fcntl.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -41,11 +40,10 @@ using epoll_threadpool::Notification;
 TEST(EventManagerTest, StartStop) {
   EventManager em;
 
-  ASSERT_TRUE(em.start(10));
+  ASSERT_TRUE(em.start(2));
   em.stop();
-  ASSERT_TRUE(em.start(10));
+  ASSERT_TRUE(em.start(2));
   em.stop();
-  ASSERT_TRUE(em.start(10));
 }
 
 TEST(EventManagerTest, NotificationDelayedRaise) {
@@ -53,7 +51,7 @@ TEST(EventManagerTest, NotificationDelayedRaise) {
   Notification n;
   EventManager::WallTime t = EventManager::currentTime();
 
-  ASSERT_TRUE(em.start(10));
+  ASSERT_TRUE(em.start(2));
   em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
@@ -64,7 +62,7 @@ TEST(EventManagerTest, NotificationPreDelayRaise) {
   Notification n;
   EventManager::WallTime t = EventManager::currentTime();
 
-  ASSERT_TRUE(em.start(10));
+  ASSERT_TRUE(em.start(2));
   em.enqueue(std::tr1::bind(&Notification::signal, &n));
   usleep(10);
   ASSERT_TRUE(n.tryWait(t+0.500));
@@ -76,7 +74,7 @@ TEST(EventManagerTest, StartEnqueueStop) {
   Notification n;
   EventManager::WallTime t = EventManager::currentTime();
 
-  em.start(4);
+  em.start(2);
   em.enqueue(std::tr1::bind(&Notification::signal, &n));
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
@@ -87,7 +85,7 @@ TEST(EventManagerTest, StartEnqueueStop2) {
   Notification n;
   EventManager::WallTime t = EventManager::currentTime();
 
-  em.start(8);
+  ASSERT_TRUE(em.start(2));
   em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
   n.wait();
   em.stop();
@@ -98,8 +96,8 @@ TEST(EventManagerTest, StartEnqueueStop3) {
   Notification n;
   EventManager::WallTime t = EventManager::currentTime();
 
-  em.start(8);
-  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.020);
+  ASSERT_TRUE(em.start(2));
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.005);
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
@@ -135,8 +133,11 @@ TEST(EventManagerTest, StartEnqueueStop4) {
   em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 1), t+0.001);
   em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 3), t+0.003);
 
-  // We start this AFTER adding the tasks to ensure we don't start one before we've added them all.
-  em.start(1);
+  // We start this AFTER adding the tasks to ensure we don't start one before
+  // we've added them all. Note that we only start one thread because its 
+  // otherwise possible we start two tasks at close to the same time and 
+  // the second one runs first, leading to flaky tests.
+  ASSERT_TRUE(em.start(1));
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 
@@ -157,7 +158,7 @@ void EnqueuedAfterCheck2(volatile bool *flag, Notification *n) {
 }
 
 void WorkerStartStop(EventManager *em) {
-  ASSERT_FALSE(em->start(4));
+  ASSERT_FALSE(em->start(2));
   ASSERT_FALSE(em->stop());
 }
 
@@ -168,8 +169,46 @@ TEST(EventManagerTest, CallMethodsFromWorkerThread) {
 
   em.enqueue(std::tr1::bind(&WorkerStartStop, &em));
   em.enqueue(std::tr1::bind(&Notification::signal, &n), t + 0.001);
-  ASSERT_TRUE(em.start(1));
+  ASSERT_TRUE(em.start(2));
   ASSERT_TRUE(n.tryWait(t+0.500));
   em.stop();
 }
+
+void WatchFdRead(Notification *n, int fd) {
+  char buf[9];
+  int r = ::read(fd, buf, 9);
+  EXPECT_STREQ("testdata", buf);
+  n->signal();
+}
+
+void WatchFdWrite(Notification *n, int fd, EventManager *em) {
+  int r = ::write(fd, "testdata", 9);
+  // Tests removeFd() from worker thread
+  em->removeFd(fd, EventManager::EM_WRITE);
+  n->signal();
+}
+
+TEST(EventManagerTest, WatchFdAndRemoveFdFromWorker) {
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
+
+  int fds[2];
+  pipe2(fds, O_NONBLOCK);
+
+  em.watchFd(fds[0], EventManager::EM_READ,
+      std::tr1::bind(&WatchFdRead, &n, fds[0]));
+  em.watchFd(fds[1], EventManager::EM_WRITE,
+      std::tr1::bind(&WatchFdWrite, &n, fds[1], &em));
+  ASSERT_TRUE(em.start(1));
+  ASSERT_TRUE(n.tryWait(t+0.500));
+  
+  em.removeFd(fds[0], EventManager::EM_READ);
+  em.stop();
+  close(fds[0]);
+  close(fds[1]);
+}
+
+// TODO: Test watchFd() with two events firing one at a time.
+// TODO: Test watchFd() with two events firing at the same time.
 
