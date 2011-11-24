@@ -67,13 +67,11 @@ void TcpSocket::Internal::start() {
   if (!_isStarted) {
     _isStarted = true;
     if (_fd > 0) {
-      _em->watchFd(_fd, EPOLLIN,
+      _em->watchFd(_fd, EventManager::EM_READ,
           bind(&TcpSocket::Internal::onReceive, shared_from_this()));
-      _em->watchFd(_fd, EPOLLRDHUP,
-          bind(&TcpSocket::Internal::disconnect, shared_from_this()));
-      _em->watchFd(_fd, EPOLLOUT,
+      _em->watchFd(_fd, EventManager::EM_WRITE,
           bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
-      _em->watchFd(_fd, EPOLLHUP,
+      _em->watchFd(_fd, EventManager::EM_ERROR,
           bind(&TcpSocket::Internal::disconnect, shared_from_this()));
 
       // We trigger the receive handler to handle the case where we got
@@ -81,6 +79,7 @@ void TcpSocket::Internal::start() {
       _em->enqueue(
           bind(&TcpSocket::Internal::onReceive, shared_from_this()));
     } else {
+      LOG(INFO) << "disconnected in start()";
       if (_disconnectCallback) {
         _em->enqueue(_disconnectCallback);
         _disconnectCallback = NULL;
@@ -146,7 +145,8 @@ void TcpSocket::Internal::write(IOBuffer* data) {
   bool wasBufferEmpty = (_sendBuffer.size() == 0);
   _sendBuffer.append(data);
   if (_isStarted && wasBufferEmpty) {
-    _em->enqueue(bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
+    _em->watchFd(_fd, EventManager::EM_WRITE,
+      bind(&TcpSocket::Internal::onCanSend, shared_from_this()));
   }
   pthread_mutex_unlock(&_mutex);
 }
@@ -154,14 +154,15 @@ void TcpSocket::Internal::write(IOBuffer* data) {
 void TcpSocket::Internal::disconnect() {
   pthread_mutex_lock(&_mutex);
   if (_fd > 0) {
-    _em->removeFd(_fd, EPOLLIN);
-    _em->removeFd(_fd, EPOLLRDHUP);
-    _em->removeFd(_fd, EPOLLOUT);
-    _em->removeFd(_fd, EPOLLHUP);
+    LOG(INFO) << "disconnect()";
+    _em->removeFd(_fd, EventManager::EM_READ);
+    _em->removeFd(_fd, EventManager::EM_WRITE);
+    _em->removeFd(_fd, EventManager::EM_ERROR);
     ::shutdown(_fd, SHUT_RDWR);
     ::close(_fd);
     _fd = -1;
     if (_disconnectCallback) {
+      LOG(INFO) << "disconnectCallback";
       _em->enqueue(_disconnectCallback);
       _disconnectCallback = NULL;
     }
@@ -171,7 +172,7 @@ void TcpSocket::Internal::disconnect() {
 
 void TcpSocket::Internal::onReceive() {
   pthread_mutex_lock(&_mutex);
-  if (_fd > 0) {
+  while (_fd > 0) {
     vector<char>* buf = new vector<char>();
     buf->resize(4096);
 
@@ -182,17 +183,20 @@ void TcpSocket::Internal::onReceive() {
       if (_recvCallback) {
         _recvCallback(&_recvBuffer);
       }
-    } else if (r < 0) {
-      delete buf;
-      if (errno != EAGAIN) {
-        LOG(INFO) << "Read error. (" << errno << "). Disconnecting fd " << _fd;
+    } else {
+      if (r < 0) {
+        delete buf;
+        if (errno != EAGAIN) {
+          LOG(INFO) << "Read error. (" << errno << "). Disconnecting fd " << _fd;
+          _em->enqueue(bind(
+              &TcpSocket::Internal::disconnect, shared_from_this()));
+        }
+      } else {
+        delete buf;
         _em->enqueue(bind(
             &TcpSocket::Internal::disconnect, shared_from_this()));
       }
-    } else {
-      delete buf;
-      _em->enqueue(bind(
-          &TcpSocket::Internal::disconnect, shared_from_this()));
+      break;
     }
   }
   pthread_mutex_unlock(&_mutex);
@@ -201,40 +205,37 @@ void TcpSocket::Internal::onReceive() {
 void TcpSocket::Internal::onCanSend() {
   const int kMaxSendSize = 4096;
   pthread_mutex_lock(&_mutex);
-  if (_fd > 0 && _sendBuffer.size()) {
-    int sz = (_sendBuffer.size() > kMaxSendSize) ? 
-                 kMaxSendSize : _sendBuffer.size();
-    const char* buf = _sendBuffer.pulldown(sz);
-    if (buf) {
-      int r = ::write(_fd, buf, sz);
-      if (r > 0) {
-        _sendBuffer.consume(r);
-      } else {
-        if (errno != EAGAIN) {
-          LOG(ERROR) << "Write error (" << errno << "). Disconnecting.";
+  if (_fd > 0) {
+    while (_sendBuffer.size()) {
+      int sz = (_sendBuffer.size() > kMaxSendSize) ? 
+                   kMaxSendSize : _sendBuffer.size();
+      const char* buf = _sendBuffer.pulldown(sz);
+      if (buf) {
+        int r = ::write(_fd, buf, sz);
+        if (r > 0) {
+          _sendBuffer.consume(r);
+        } else if (r < 0) {
+          if (errno != EAGAIN) {
+            _em->enqueue(bind(
+                &TcpSocket::Internal::disconnect, shared_from_this()));
+          }
           pthread_mutex_unlock(&_mutex);
-          // since we only ever run on a worker thread, we can safely call
-          // disconnect without using enqueue()
-          disconnect();
           return;
         } else {
-          //LOG(INFO) << "Skipping write due to EAGAIN";
+          LOG(INFO) << "write returned 0.";
+          _em->enqueue(bind(
+              &TcpSocket::Internal::disconnect, shared_from_this()));
         }
       }
     }
-/*    LOG(INFO) << "_sendBuffer " << _sendBuffer.size();
-    // Debugging
-    EventManager::WallTime t = EventManager::currentTime();
-    _em->enqueue(bind(&TcpSocket::Internal::onCanSend, shared_from_this()),
-                 t + 1.0);
-*/
+    _em->removeFd(_fd, EventManager::EM_WRITE);
   }
   pthread_mutex_unlock(&_mutex);
 }
 
 TcpListenSocket::TcpListenSocket(EventManager* em, int fd)
     : _internal(new Internal(em, fd)) {
-  em->watchFd(fd, EPOLLIN, bind(
+  em->watchFd(fd, EventManager::EM_READ, bind(
       &TcpListenSocket::Internal::onAccept, _internal));
 }
 
@@ -254,7 +255,7 @@ TcpListenSocket::Internal::~Internal() {
 
 void TcpListenSocket::Internal::shutdown() {
   pthread_mutex_lock(&_mutex);
-  _em->removeFd(_fd, EPOLLIN);
+  _em->removeFd(_fd, EventManager::EM_READ);
   ::shutdown(_fd, SHUT_RDWR);
   ::close(_fd);
   _fd = -1;

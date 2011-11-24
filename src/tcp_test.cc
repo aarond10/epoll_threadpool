@@ -189,20 +189,68 @@ void acceptConnectionCallback(shared_ptr<TcpSocket> s) {
 // Order of operations - write before start.
 TEST(TCPTest, WriteBeforeStartedClient) {
   EventManager em;
-  em.start(4);  // TODO(aarond10): I suspect a memory barrier issue with enqueueAfter.
+  em.start(4);
 
   int port = 0;
   shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
   s->setAcceptCallback(std::tr1::bind(&acceptConnectionCallback, std::tr1::placeholders::_1));
-  //s->start();
 
   shared_ptr<TcpSocket> t(TcpSocket::connect(&em, "127.0.0.1", port));
   Notification n;
   t->setDisconnectCallback(std::tr1::bind(&Notification::signal, &n));
   t->write(new IOBuffer("abcd", 4));
   t->start();
+  LOG(INFO) << "Print " << t->isDisconnected();
   n.wait();
 }
+
+void FillWriteBufferReceive(int *counter, Notification *n, IOBuffer *buf) {
+  int s = buf->size();
+  *counter -= s;
+  buf->consume(s);
+  CHECK_GE(*counter, 0);
+  if (*counter == 0) {
+    n->signal();
+  }
+}
+
+// Consume data and count bytes.
+void FillWriteBufferAccept(int *counter, Notification *n, shared_ptr<TcpSocket> *ps, shared_ptr<TcpSocket> s) {
+  *ps = s;
+  s->setReceiveCallback(std::tr1::bind(&FillWriteBufferReceive, 
+      counter, n, std::tr1::placeholders::_1));
+  s->start();
+}
+
+// Fill write buffer - Big write
+TEST(TCPTest, FillWriteBuffer) {
+  EventManager em;
+  em.start(4);
+
+  int counter = 0;
+  Notification n;
+  shared_ptr<TcpSocket> accept_sock;
+
+  int port = 0;
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
+  s->setAcceptCallback(std::tr1::bind(&FillWriteBufferAccept, &counter, &n, &accept_sock, std::tr1::placeholders::_1));
+  shared_ptr<TcpSocket> t(TcpSocket::connect(&em, "127.0.0.1", port));
+
+  const int kSize = 1024*1024*5;
+  //const int kSize = 1024 * 10;
+  counter = kSize;
+  char *data = new char[kSize];
+  for (int i = 0; i < kSize; ++i) {
+    data[i] = i;
+  }
+  t->write(new IOBuffer(data, kSize));
+  delete data;
+
+  t->start();
+  n.wait();
+  t->disconnect();
+}
+
 
 // TODO: Order of operations - write after disconnect
 // TODO: Order of operations - disconnect after disconnect
