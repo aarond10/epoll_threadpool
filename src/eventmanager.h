@@ -130,6 +130,12 @@ class EventManager {
     return a.when > b.when; 
   }
 
+  /**
+   * Helper that wraps and hides epoll_ctl calls, intended to make updating 
+   * the epoll fd simpler.
+   */
+  void epollUpdate(int fd, int op);
+
   pthread_mutex_t _mutex;
 
   int _epoll_fd;

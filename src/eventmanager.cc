@@ -41,34 +41,6 @@ namespace epoll_threadpool {
 
 using std::tr1::function;
 
-namespace {
-inline int getEpollFlags(std::map<int, 
-    std::map<EventManager::EventType, function<void()> > >& fds, int fd) {
-  int flags = 0;
-  if (fds.find(fd) == fds.end()) {
-    return 0;
-  }
-  for (std::map<EventManager::EventType, 
-      function<void()> >::iterator i = fds[fd].begin();
-      i != fds[fd].end(); ++i) {
-    switch (i->first) {
-     case EventManager::EM_READ:
-      flags |= EPOLLIN;
-      break;
-     case EventManager::EM_WRITE:
-      flags |= EPOLLOUT;
-      break;
-     case EventManager::EM_ERROR:
-      flags |= EPOLLRDHUP | EPOLLHUP;
-      break;
-     default:
-      LOG(ERROR) << "Unknown event type " << i->first;
-    };
-  }
-  return flags;
-}
-}  // anonymous namespace
-
 EventManager::EventManager() : _is_running(false) {
   pthread_mutex_init(&_mutex, 0);
   _epoll_fd = epoll_create(64);
@@ -85,10 +57,15 @@ EventManager::EventManager() : _is_running(false) {
 
 EventManager::~EventManager() {
   stop();
+
+  struct epoll_event ev;
+  ev.data.u64 = 0;  // stop valgrind whinging
+  ev.events = EPOLLIN;
+  ev.data.fd = _event_fd;
+  epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, _event_fd, &ev);
   close(_event_fd);
+
   close(_epoll_fd);
-  _event_fd = -1;
-  _epoll_fd = -1;
   pthread_mutex_destroy(&_mutex);
 }
 
@@ -129,6 +106,7 @@ bool EventManager::stop() {
     pthread_join(*i, NULL);
     pthread_mutex_lock(&_mutex);
   }
+  _thread_set.clear();
 
   // Cancel any unprocessed tasks or fds.
   DLOG_IF(WARNING, !_fds.empty()) << "Stopping event manager with attached "
@@ -138,7 +116,6 @@ bool EventManager::stop() {
   _fds.clear();
   _tasks.clear();
 
-  _thread_set.clear();
   pthread_mutex_unlock(&_mutex);
   return true;
 }
@@ -165,24 +142,12 @@ void EventManager::enqueue(function<void()> f, WallTime when) {
 bool EventManager::watchFd(int fd, EventType type, function<void()> f) {
   pthread_mutex_lock(&_mutex);
 
-  int epoll_op = 0;
-  if (_fds.find(fd) != _fds.end()) {
-    epoll_op = EPOLL_CTL_MOD;
+  if (_fds.find(fd) == _fds.end()) {
+    _fds[fd][type] = f;
+    epollUpdate(fd, EPOLL_CTL_ADD);
   } else {
-    epoll_op = EPOLL_CTL_ADD;
-  }
-
-  _fds[fd][type] = f;
-
-  struct epoll_event ev;
-  ev.data.u64 = 0;  // stop valgrind whinging
-  ev.events = getEpollFlags(_fds, fd);
-  ev.data.fd = fd;
-
-  if (_fds.find(fd) != _fds.end()) {
-    epoll_ctl(_epoll_fd, epoll_op, fd, &ev);
-  } else {
-    epoll_ctl(_epoll_fd, epoll_op, fd, &ev);
+    _fds[fd][type] = f;
+    epollUpdate(fd, EPOLL_CTL_MOD);
   }
 
   eventfd_write(_event_fd, 1);
@@ -198,22 +163,46 @@ bool EventManager::removeFd(int fd, EventType type) {
     return false;
   }
 
-  _fds[fd].erase(type);
-
-  struct epoll_event ev;
-  ev.data.u64 = 0;  // stop valgrind whinging
-  ev.events = getEpollFlags(_fds, fd);
-  ev.data.fd = fd;
-
-  if (ev.events != 0) {
-    epoll_ctl(_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-  } else {
-    epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+  if (_fds[fd].size() == 1 &&
+      _fds[fd].find(type) != _fds[fd].end()) {
+    epollUpdate(fd, EPOLL_CTL_DEL);
     _fds.erase(fd);
+  } else {
+    _fds[fd].erase(type);
+    epollUpdate(fd, EPOLL_CTL_MOD);
   }
 
   pthread_mutex_unlock(&_mutex);
   return true;
+}
+
+void EventManager::epollUpdate(int fd, int epoll_op) {
+  struct epoll_event ev;
+  ev.data.u64 = 0;  // stop valgrind whinging
+  ev.events = 0;
+  for (std::map<EventManager::EventType, 
+      function<void()> >::iterator i = _fds[fd].begin();
+      i != _fds[fd].end(); ++i) {
+    switch (i->first) {
+     case EventManager::EM_READ:
+      ev.events |= EPOLLIN;
+      break;
+     case EventManager::EM_WRITE:
+      ev.events |= EPOLLOUT;
+      break;
+     case EventManager::EM_ERROR:
+      ev.events |= EPOLLRDHUP | EPOLLHUP;
+      break;
+     default:
+      LOG(ERROR) << "Unknown event type " << i->first;
+    };
+  }
+  ev.data.fd = fd;
+
+  int r = epoll_ctl(_epoll_fd, epoll_op, fd, &ev);
+  DLOG_IF(WARNING, r != 0) 
+      << "epoll_ctl(" << _epoll_fd << ", " << epoll_op << ", " << fd 
+      << ", &ev) returned error " << errno;
 }
 
 void* EventManager::trampoline(void *arg) {
@@ -252,27 +241,30 @@ void EventManager::thread_main() {
     // Execute triggered fd handlers
     for (int i = 0; i < ret; i++) {
       int fd = events[i].data.fd;
-      int flags = events[i].events;
-
-      if (events[i].data.fd == _event_fd) {
-        // just a thread wake-up event. consume and continue.
+      if (fd == _event_fd) {
         uint64_t val;
-        int ret = eventfd_read(_event_fd, &val);
-      } else if (_fds.find(fd) != _fds.end()) {
-        if ((flags | EPOLLOUT) && _fds[fd].find(EM_WRITE) != _fds[fd].end()) {
-          function<void()> f = _fds[fd][EM_WRITE];
-          pthread_mutex_unlock(&_mutex);
-          f();
-          pthread_mutex_lock(&_mutex);
-        } 
-        else if ((flags | EPOLLIN) && _fds[fd].find(EM_READ) != _fds[fd].end()) {
+        eventfd_read(_event_fd, &val);
+      } else {
+        int flags = events[i].events;
+        if ((flags | EPOLLIN) && 
+            _fds.find(fd) != _fds.end() &&
+            _fds[fd].find(EM_READ) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_READ];
           pthread_mutex_unlock(&_mutex);
           f();
           pthread_mutex_lock(&_mutex);
         }
-        else if ((flags | EPOLLHUP | EPOLLRDHUP) &&
-                 _fds[fd].find(EM_ERROR) != _fds[fd].end()) {
+        if ((flags | EPOLLOUT) && 
+            _fds.find(fd) != _fds.end() &&
+            _fds[fd].find(EM_WRITE) != _fds[fd].end()) {
+          function<void()> f = _fds[fd][EM_WRITE];
+          pthread_mutex_unlock(&_mutex);
+          f();
+          pthread_mutex_lock(&_mutex);
+        } 
+        if ((flags | EPOLLHUP | EPOLLRDHUP) &&
+            _fds.find(fd) != _fds.end() &&
+            _fds[fd].find(EM_ERROR) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_ERROR];
           pthread_mutex_unlock(&_mutex);
           f();
@@ -295,5 +287,4 @@ void EventManager::thread_main() {
   eventfd_write(_event_fd, 1); 
   pthread_mutex_unlock(&_mutex);
 }
-
 }

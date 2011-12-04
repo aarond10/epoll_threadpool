@@ -27,6 +27,8 @@
  THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
@@ -176,34 +178,60 @@ TEST(EventManagerTest, CallMethodsFromWorkerThread) {
 
 void WatchFdRead(Notification *n, int fd) {
   char buf[9];
-  int r = ::read(fd, buf, 9);
+  ASSERT_EQ(9, ::read(fd, buf, 9));
   EXPECT_STREQ("testdata", buf);
   n->signal();
 }
 
 void WatchFdWrite(Notification *n, int fd, EventManager *em) {
-  int r = ::write(fd, "testdata", 9);
+  ASSERT_EQ(9, ::write(fd, "testdata", 9));
   // Tests removeFd() from worker thread
-  em->removeFd(fd, EventManager::EM_WRITE);
+  ASSERT_TRUE(em->removeFd(fd, EventManager::EM_WRITE));
   n->signal();
 }
 
 TEST(EventManagerTest, WatchFdAndRemoveFdFromWorker) {
   EventManager em;
-  Notification n;
+  Notification n, n2;
   EventManager::WallTime t = EventManager::currentTime();
 
   int fds[2];
-  pipe2(fds, O_NONBLOCK);
+  ASSERT_EQ(0, pipe2(fds, O_NONBLOCK));
 
   em.watchFd(fds[0], EventManager::EM_READ,
       std::tr1::bind(&WatchFdRead, &n, fds[0]));
   em.watchFd(fds[1], EventManager::EM_WRITE,
-      std::tr1::bind(&WatchFdWrite, &n, fds[1], &em));
+      std::tr1::bind(&WatchFdWrite, &n2, fds[1], &em));
   ASSERT_TRUE(em.start(1));
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  ASSERT_TRUE(n.tryWait(t + 0.500));
+  ASSERT_TRUE(n2.tryWait(t + 0.500));
   
-  em.removeFd(fds[0], EventManager::EM_READ);
+  ASSERT_TRUE(em.removeFd(fds[0], EventManager::EM_READ));
+  em.stop();
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST(EventManagerTest, WatchFdConcurrentReadWrite) {
+  EventManager em;
+  Notification n, n2;
+  EventManager::WallTime t = EventManager::currentTime();
+
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+
+  // Write test data to fds[1] so fds[0] has something to read.
+  ASSERT_EQ(9, ::write(fds[1], "testdata", 9));
+
+  em.watchFd(fds[0], EventManager::EM_READ,
+      std::tr1::bind(&WatchFdRead, &n, fds[0]));
+  em.watchFd(fds[0], EventManager::EM_WRITE,
+      std::tr1::bind(&WatchFdWrite, &n2, fds[0], &em));
+  ASSERT_TRUE(em.start(1));
+  ASSERT_TRUE(n.tryWait(t + 0.500));
+  ASSERT_TRUE(n2.tryWait(t + 0.500));
+  
+  ASSERT_TRUE(em.removeFd(fds[0], EventManager::EM_READ));
   em.stop();
   close(fds[0]);
   close(fds[1]);
