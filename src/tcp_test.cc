@@ -74,7 +74,7 @@ TEST(TCPTest, ListenConnectTest) {
 
   int port = 0;
   shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
-  //s->start();
+  // TODO(aarond10): Add TcpListenSocket::start() to avoid a race issue?
   shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(s);
   ASSERT_TRUE(c);
@@ -113,7 +113,7 @@ void acceptHandler(Notification *n, string expected, shared_ptr<TcpSocket> *ps, 
 // Code coverage - tests we can accept data from a newly connected client
 TEST(TCPTest, ListenConnectSendDataTest) {
   EventManager em;
-  em.start(4);
+  em.start(1);
 
   EventManager::WallTime t = EventManager::currentTime();
   const char *data = "some test data";
@@ -125,7 +125,6 @@ TEST(TCPTest, ListenConnectSendDataTest) {
   Notification n;
   shared_ptr<TcpSocket> ps;
   s->setAcceptCallback(std::tr1::bind(&acceptHandler, &n, string(data), &ps, _1));
-  //s->start();
 
   shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(c != NULL);
@@ -183,7 +182,6 @@ TEST(TCPTest, ListenConnectDisconnectTest) {
 void acceptConnectionCallback(shared_ptr<TcpSocket> s) {
   // This does nothing but because we don't store the TcpSocket, it will cause
   // it to get destroyed, immediately disconnecting the endpoint.
-  //LOG(INFO) << "Doing nothing";
 }
 
 // Order of operations - write before start.
@@ -236,7 +234,7 @@ TEST(TCPTest, FillWriteBuffer) {
   s->setAcceptCallback(std::tr1::bind(&FillWriteBufferAccept, &counter, &n, &accept_sock, std::tr1::placeholders::_1));
   shared_ptr<TcpSocket> t(TcpSocket::connect(&em, "127.0.0.1", port));
 
-  const int kSize = 1024*1024*5;
+  const int kSize = 1024*1024;
   //const int kSize = 1024 * 10;
   counter = kSize;
   char *data = new char[kSize];
@@ -244,7 +242,7 @@ TEST(TCPTest, FillWriteBuffer) {
     data[i] = i;
   }
   t->write(new IOBuffer(data, kSize));
-  delete data;
+  delete[] data;
 
   t->start();
   n.wait();

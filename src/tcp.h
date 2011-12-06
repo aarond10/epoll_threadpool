@@ -128,6 +128,12 @@ class TcpSocket {
    */
   EventManager* getEventManager() const { return _internal->_em; }
 
+  /**
+   * Returns the file descriptor for the socket.
+   * @note This shouldn't be used directly. Its exposed for debugging.
+   */
+  int fd() const { return _internal->_fd; }
+
  private:
   // Because we need to preserve data structures until we can be sure they
   // aren't in use on worker threads, we store them separately.
