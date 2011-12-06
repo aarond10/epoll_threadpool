@@ -249,8 +249,24 @@ TEST(TCPTest, FillWriteBuffer) {
   t->disconnect();
 }
 
+// Order of operations - write after disconnect (no effect)
+TEST(TCPTest, WriteAfterDisconnect) {
+  EventManager em;
+  em.start(4);
 
-// TODO: Order of operations - write after disconnect
+  int port = 0;
+  shared_ptr<TcpListenSocket> s = createListenSocket(&em, port);
+  shared_ptr<TcpSocket> t(TcpSocket::connect(&em, "127.0.0.1", port));
+
+  Notification n;
+
+  const char data[] = "testdata";
+  t->setDisconnectCallback(std::tr1::bind(&Notification::signal, &n));
+  t->start();
+  n.wait();
+  t->write(new IOBuffer(data, sizeof(data)));
+}
+
 // TODO: Order of operations - disconnect after disconnect
 // TODO: Order of operations - start after disconnect
 // TODO: Order of operations - disconnect from receive handler
