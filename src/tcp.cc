@@ -46,6 +46,7 @@ TcpSocket::TcpSocket(EventManager* em, int fd)
 
 TcpSocket::~TcpSocket() {
   _internal->_disconnectCallback = NULL;
+  _internal->disconnect();
 }
 
 TcpSocket::Internal::Internal(EventManager* em, int fd)
