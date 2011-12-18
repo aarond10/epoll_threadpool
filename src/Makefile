@@ -1,7 +1,7 @@
-CPPFLAGS = -g
+CPPFLAGS = -O3
 LDFLAGS = -lpthread -lstdc++ -lglog -lgtest -lgtest_main
 
-all: iobuffer_test eventmanager_test tcp_test lib include
+all: iobuffer_test eventmanager_test future_test tcp_test lib include
 
 clean:
 	rm -f *.o iobuffer_test eventmanager_test tcp_test 
@@ -13,6 +13,9 @@ iobuffer_test: iobuffer_test.o
 eventmanager_test: eventmanager.o eventmanager_test.o
 	g++ -o $@ $^ $(LDFLAGS)
 
+future_test: future_test.o eventmanager.o
+	g++ -o $@ $^ $(LDFLAGS)
+
 tcp_test: eventmanager.o tcp.o tcp_test.o
 	g++ -o $@ $^ $(LDFLAGS)
 
@@ -22,7 +25,7 @@ lib: eventmanager.o tcp.o
 	ar cr lib/libepoll_threadpool.a $^
 
 .PHONY: include
-include: eventmanager.h iobuffer.h notification.h tcp.h
+include: barrier.h eventmanager.h iobuffer.h notification.h tcp.h
 	mkdir -p include/epoll_threadpool
 	cp $^ include/epoll_threadpool
 
