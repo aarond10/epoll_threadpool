@@ -26,51 +26,70 @@
  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  THE POSSIBILITY OF SUCH DAMAGE.
 */
-#include "future.h"
+#ifndef _EPOLL_THREADPOOL_BARRIER_H_
+#define _EPOLL_THREADPOOL_BARRIER_H_
 
 #include "eventmanager.h"
-#include "notification.h"
 
-#include <gtest/gtest.h>
+#include <pthread.h>
+#include <stdint.h>
+
+#include <functional>
+#include <tr1/memory>
 #include <string>
 
-using epoll_threadpool::EventManager;
-using epoll_threadpool::Future;
-using epoll_threadpool::Notification;
-using std::string;
+namespace epoll_threadpool {
 
-TEST(FutureTest, BasicSynchronous) {
-  Future<string> f(string("apple"));
-  ASSERT_EQ(string("apple"), f.get());
+using std::tr1::bind;
+using std::tr1::function;
+
+/**
+ * A simple class used to provide a synchronisation point. It can called as
+ * a std::tr1::function<void()> a fixed number of times before triggering
+ * a callback and destroying itself.
+ */
+class Barrier {
+ private:
+  pthread_mutex_t _mutex;
+  int _n;
+  function<void()> _callback;
+
+ public:
+  Barrier(int n, function<void()> callback)
+      : _n(n), _callback(callback) {
+    pthread_mutex_init(&_mutex, 0);
+  }
+  virtual ~Barrier() {
+    pthread_mutex_destroy(&_mutex);
+  }
+
+  operator function<void()>() {
+    return bind(&Barrier::signal, this);
+  }
+
+ private:
+
+  void signal() {
+    pthread_mutex_lock(&_mutex);
+    --_n;
+    if (_n > 0) {
+      pthread_mutex_unlock(&_mutex);
+#ifdef NDEBUG
+    } else if(_n < 0) {
+      DLOG(ERROR) << "Barrier " << this 
+                  << " called too many times (" << _n << ").";
+#endif
+    } else {
+      pthread_mutex_unlock(&_mutex);
+      _callback();
+      delete this;
+    }
+  }
+
+  Barrier(const Barrier& b); // No copying
+  Barrier& operator=(const Barrier& b); // No copying
+};
+
 }
 
-TEST(FutureTest, TryGet) {
-  Future<string> f;
-  EventManager::WallTime t = EventManager::currentTime();
-  ASSERT_FALSE(f.tryWait(t + 0.002));
-  f.set(string("apple"));
-  ASSERT_TRUE(f.tryWait(t + 0.002));
-  ASSERT_EQ(string("apple"), (string)f);
-}
-
-void callbackHelper(Notification *n, const string &s) {
-  ASSERT_EQ(string("apple"), s);
-  n->signal();
-}
-
-TEST(FutureTest, AddCallback) {
-  Future<string> f;
-  Notification n1, n2, n3, n4;
-  EventManager::WallTime t = EventManager::currentTime();
-  f.addCallback(bind(&callbackHelper, &n1, std::tr1::placeholders::_1));
-  f.addCallback(bind(&callbackHelper, &n2, std::tr1::placeholders::_1));
-  f.set(string("apple"));
-  f.addCallback(bind(&callbackHelper, &n3, std::tr1::placeholders::_1));
-  ASSERT_EQ(string("apple"), f.get());
-  ASSERT_TRUE(n1.tryWait(t + 1));
-  ASSERT_TRUE(n2.tryWait(t + 1));
-  ASSERT_TRUE(n3.tryWait(t + 1));
-  f.addCallback(bind(&callbackHelper, &n4, std::tr1::placeholders::_1));
-  ASSERT_TRUE(n4.tryWait(t + 1));
-}
-
+#endif

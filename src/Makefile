@@ -25,7 +25,7 @@ lib: eventmanager.o tcp.o
 	ar cr lib/libepoll_threadpool.a $^
 
 .PHONY: include
-include: barrier.h eventmanager.h iobuffer.h notification.h tcp.h
+include: barrier.h eventmanager.h future.h iobuffer.h notification.h tcp.h
 	mkdir -p include/epoll_threadpool
 	cp $^ include/epoll_threadpool
 

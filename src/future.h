@@ -56,6 +56,12 @@ template<class T>
 class Future {
  public:
   Future() : _internal(new Internal()) { }
+  explicit Future(const T &value) : _internal(new Internal()) {
+    _internal->set(value);
+  }
+  explicit Future(T &value) : _internal(new Internal()) {
+    _internal->set(value);
+  }
   Future(const Future &other) {
     _internal = other._internal;
   }
@@ -64,29 +70,34 @@ class Future {
   }
   virtual ~Future() { }
 
+  operator const T&() {
+    return get();
+  }
+
   /**
    * Sets the return value. Ownership of 'value' is passed to the function.
    */
-  bool set(const T *value) {
+  bool set(T& value) {
+    return _internal->set(value);
+  }
+  bool set(T value) {
     return _internal->set(value);
   }
 
   /**
-   * Attempts to read the return value, waiting up to 'when' before
-   * giving up and returning NULL.
-   * @note Ownership of the returned value remains with this class.
+   * Waits until we either have a value to return or 'when' is reached.
+   * @returns true if value available, false otherwise.
    */
-  const T* tryGet(EventManager::WallTime when) {
-    return _internal->tryGet(when);
+  bool tryWait(EventManager::WallTime when) {
+    return _internal->tryWait(when);
   }
 
   /**
    * Returns the value, blocking if necessary until it becomes available.
-   * @note Ownership of the returned value remains with this class.
    * @note Be careful of deadlocks if using this method. Consider using
    *       addCallback() instead.
    */
-  const T* get() {
+  const T& get() {
     return _internal->get();
   }
 
@@ -112,14 +123,13 @@ class Future {
       delete _value;
     }
 
-    bool set(const T *value) {
-    
+    bool set(T value) {
       pthread_mutex_lock(&_mutex);
       if (_signaled) {
 	pthread_mutex_unlock(&_mutex);
 	return false;
       } else {
-	_value = value;
+	_value = new T(value);
 	_signaled = true;
 	pthread_cond_broadcast(&_cond);
 	pthread_mutex_unlock(&_mutex);
@@ -130,32 +140,28 @@ class Future {
       }
     }
 
-    const T* tryGet(EventManager::WallTime when) {
+    bool tryWait(EventManager::WallTime when) {
       pthread_mutex_lock(&_mutex);
       if (_signaled) {
 	pthread_mutex_unlock(&_mutex);
-	return _value;
+	return true;
       }
       struct timespec ts = { (int64_t)when, 
 			     (when - (int64_t)when) * 1000000000 };
       int r = pthread_cond_timedwait(&_cond, &_mutex, &ts);
       pthread_mutex_unlock(&_mutex);
-      if (r == 0) {
-	return _value;
-      } else {
-	return NULL;
-      }
+      return (r == 0);
     }
 
-    const T* get() {
+    const T& get() {
       pthread_mutex_lock(&_mutex);
       if (_signaled) {
 	pthread_mutex_unlock(&_mutex);
-	return _value;
+	return *_value;
       }
       int ret = pthread_cond_wait(&_cond, &_mutex);
       pthread_mutex_unlock(&_mutex);
-      return _value;
+      return *_value;
     }
 
     void addCallback(function<void(const T&)> callback) {
@@ -170,7 +176,7 @@ class Future {
     }
 
    private:
-    const T* _value;
+    T* _value;
     bool _signaled;
     pthread_mutex_t _mutex;
     pthread_cond_t _cond;
