@@ -40,7 +40,7 @@ using epoll_threadpool::Notification;
 using std::string;
 
 TEST(FutureTest, BasicSynchronous) {
-  Future<string> f(string("apple"));
+  Future<string> f("apple");
   ASSERT_EQ(string("apple"), f.get());
 }
 
@@ -64,7 +64,7 @@ TEST(FutureTest, AddCallback) {
   EventManager::WallTime t = EventManager::currentTime();
   f.addCallback(bind(&callbackHelper, &n1, std::tr1::placeholders::_1));
   f.addCallback(bind(&callbackHelper, &n2, std::tr1::placeholders::_1));
-  f.set(string("apple"));
+  f.set("apple");
   f.addCallback(bind(&callbackHelper, &n3, std::tr1::placeholders::_1));
   ASSERT_EQ(string("apple"), f.get());
   ASSERT_TRUE(n1.tryWait(t + 1));

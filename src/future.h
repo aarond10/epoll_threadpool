@@ -43,46 +43,48 @@ using std::tr1::function;
 using std::tr1::shared_ptr;
 
 /**
- * This class serves as a placeholder for a value. Its intended to be returned
- * in place of an actual value that is typically determined asynchronously.
- * The class allows both synchronous and asynchronous style programming 
- * constructs to be used. pthread code borrowed from Notification is currently
- * used to handle most of the synchronisation.
- * Internal state is reference counted so copies of the object should be
- * completely safe to use.
+ * A Future is a placeholder for an arbitrary return value that might not be
+ * known until a later point in time.
+ *
+ * The user should be aware that there are several caveats to using this class.
+ *   1. Access to the return value *may* incur a mutex lock overhead.
+ *   2. Only types with copy constructors can be used because the class takes 
+ *      a copy of the returned value to handle cases where addCallback() or 
+ *      get() are called once the return value is out of scope.
+ *   3. The return value is always const. Its possible to have multiple
+ *      callbacks registered and non-const would be dangerous.
+ *
+ * Aside from these conditions, the user is free to use a cast Future in place
+ * of its representive type. In such cases, the object behaves synchronously 
+ * like a regualr return value. To use it asynchronously, simply call 
+ * addCallback() on the return value instead and let it fall out of scope.
+ * (Futures maintain a reference counted internal state and thus will clean
+ * themselves up.)
+
  * @see Notification
  */
 template<class T>
 class Future {
  public:
   Future() : _internal(new Internal()) { }
-  explicit Future(const T &value) : _internal(new Internal()) {
-    _internal->set(value);
+  Future(T value) : _internal(new Internal()) { 
+    _internal->set(new T(value));
   }
-  explicit Future(T &value) : _internal(new Internal()) {
-    _internal->set(value);
+  Future(const Future &other) {  
+    _internal = other._internal; 
   }
-  Future(const Future &other) {
+  Future &operator=(Future &other) { 
     _internal = other._internal;
-  }
-  Future &operator=(Future &other) {
-    _internal = other._internal;
+    return *this;
   }
   virtual ~Future() { }
 
-  operator const T&() {
-    return get();
-  }
+  operator const T&() { return get(); }
 
   /**
-   * Sets the return value. Ownership of 'value' is passed to the function.
+   * Sets the return value.
    */
-  bool set(T& value) {
-    return _internal->set(value);
-  }
-  bool set(T value) {
-    return _internal->set(value);
-  }
+  bool set(T value) { return _internal->set(new T(value)); }
 
   /**
    * Waits until we either have a value to return or 'when' is reached.
@@ -94,8 +96,6 @@ class Future {
 
   /**
    * Returns the value, blocking if necessary until it becomes available.
-   * @note Be careful of deadlocks if using this method. Consider using
-   *       addCallback() instead.
    */
   const T& get() {
     return _internal->get();
@@ -105,6 +105,8 @@ class Future {
    * Registers a callback to get run when the Future's value is set.
    * If a callback is added after the value has been set, it will be
    * executed immediately.
+   * @note Callbacks registered here will run on either the calling
+   *       thread or the thread that calls set().
    */
   void addCallback(function<void(const T&)> callback) {
     _internal->addCallback(callback);
@@ -113,7 +115,7 @@ class Future {
  private:
   class Internal {
    public:
-    Internal() : _value(NULL), _signaled(false) {
+    Internal() : _value(NULL) {
       pthread_mutex_init(&_mutex, 0);
       pthread_cond_init(&_cond, 0);
     }
@@ -123,26 +125,30 @@ class Future {
       delete _value;
     }
 
-    bool set(T value) {
+    bool set(T* value) {
       pthread_mutex_lock(&_mutex);
-      if (_signaled) {
+      if (_value != NULL) {
 	pthread_mutex_unlock(&_mutex);
+        delete value;
 	return false;
       } else {
-	_value = new T(value);
-	_signaled = true;
+	_value = value;
 	pthread_cond_broadcast(&_cond);
 	pthread_mutex_unlock(&_mutex);
 	for (class std::list< function<void(const T&)> >::iterator i = 
 	     _callbacks.begin(); i != _callbacks.end(); ++i) {
 	  (*i)(*_value);
 	}
+        return true;
       }
     }
 
     bool tryWait(EventManager::WallTime when) {
+      if (_value != NULL) {
+        return true;
+      }
       pthread_mutex_lock(&_mutex);
-      if (_signaled) {
+      if (_value != NULL) {
 	pthread_mutex_unlock(&_mutex);
 	return true;
       }
@@ -154,8 +160,11 @@ class Future {
     }
 
     const T& get() {
+      if (_value != NULL) {
+        return *_value;
+      }
       pthread_mutex_lock(&_mutex);
-      if (_signaled) {
+      if (_value != NULL) {
 	pthread_mutex_unlock(&_mutex);
 	return *_value;
       }
@@ -165,8 +174,12 @@ class Future {
     }
 
     void addCallback(function<void(const T&)> callback) {
+      if (_value != NULL) {
+ 	callback(*_value);
+        return;
+      }
       pthread_mutex_lock(&_mutex);
-      if (_signaled) {
+      if (_value != NULL) {
 	pthread_mutex_unlock(&_mutex);
 	callback(*_value);
       } else {
@@ -177,7 +190,6 @@ class Future {
 
    private:
     T* _value;
-    bool _signaled;
     pthread_mutex_t _mutex;
     pthread_cond_t _cond;
     std::list< function<void(const T&)> > _callbacks;
