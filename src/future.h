@@ -31,6 +31,8 @@
 
 #include "eventmanager.h"
 
+#include <glog/logging.h>
+
 #include <pthread.h>
 
 #include <list>
@@ -60,20 +62,24 @@ using std::tr1::shared_ptr;
  * addCallback() on the return value instead and let it fall out of scope.
  * (Futures maintain a reference counted internal state and thus will clean
  * themselves up.)
-
+ *
  * @see Notification
  */
 template<class T>
 class Future {
  public:
   Future() : _internal(new Internal()) { }
-  Future(T value) : _internal(new Internal()) { 
-    _internal->set(new T(value));
-  }
+  Future(T value) : _internal(new Internal(new T(value))) { }
   Future(const Future &other) {  
     _internal = other._internal; 
   }
   Future &operator=(Future &other) { 
+    if (_internal->hasValue()) {
+      LOG(ERROR) << "Future assigned another future's value but value "
+                 << "has already been set.";
+      return *this;
+    }
+    // TODO(aarond10): Retain our callbacks.
     _internal = other._internal;
     return *this;
   }
@@ -85,6 +91,11 @@ class Future {
    * Sets the return value.
    */
   bool set(T value) { return _internal->set(new T(value)); }
+
+  /**
+   * Inherit the return value from another Future instance.
+   */
+  bool set(Future<T> &other) { *this = other; }
 
   /**
    * Waits until we either have a value to return or 'when' is reached.
@@ -119,13 +130,25 @@ class Future {
       pthread_mutex_init(&_mutex, 0);
       pthread_cond_init(&_cond, 0);
     }
+    Internal(T* value) : _value(value) {
+      pthread_mutex_init(&_mutex, 0);
+      pthread_cond_init(&_cond, 0);
+    }
     virtual ~Internal() {
       pthread_mutex_destroy(&_mutex);
       pthread_cond_destroy(&_cond);
       delete _value;
     }
 
+    bool hasValue() {
+      return (_value != NULL);
+    }
+
     bool set(T* value) {
+      if (_value != NULL) {
+        delete value;
+        return false;
+      }
       pthread_mutex_lock(&_mutex);
       if (_value != NULL) {
 	pthread_mutex_unlock(&_mutex);

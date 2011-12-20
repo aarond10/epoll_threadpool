@@ -63,9 +63,12 @@ class Barrier {
     pthread_mutex_destroy(&_mutex);
   }
 
-  operator function<void()>() {
+  function<void()> callback() {
     return bind(&Barrier::signal, this);
   }
+  /*operator function<void()>() {
+    return bind(&Barrier::signal, this);
+  }*/
 
  private:
 
@@ -85,6 +88,8 @@ class Barrier {
       delete this;
     }
   }
+
+ private:
 
   Barrier(const Barrier& b); // No copying
   Barrier& operator=(const Barrier& b); // No copying
