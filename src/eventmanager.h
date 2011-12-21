@@ -30,18 +30,21 @@
 #define _EPOLL_THREADPOOL_EVENTMANAGER_H_
 
 #include <algorithm>
+#include <chrono>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <tr1/functional>
 #include <vector>
 
-#include <pthread.h>
 #include <stdint.h>
 
 namespace epoll_threadpool {
 
 using namespace std;
+using namespace std::chrono;
 using std::tr1::function;
 
 /**
@@ -50,7 +53,7 @@ using std::tr1::function;
  */
 class EventManager {
  public:
-  typedef double WallTime;
+  typedef time_point<high_resolution_clock> Time;
 
   /**
    * These represent the type of events a user can watch for on a file 
@@ -82,9 +85,12 @@ class EventManager {
   bool stop();
 
   /**
-   * Returns the current wall time in fractional seconds since epoch.
+   * Returns the current time in a high resolution format.
+   * This current is equivalent to std::chrono::high_resolution_clock::now()
    */
-  static WallTime currentTime();
+  static Time currentTime() {
+    return high_resolution_clock::now();
+  }
 
   /**
    * Enqueues a function to be run on one of the EventManager's worker threads.
@@ -101,7 +107,7 @@ class EventManager {
    * requested time.
    * It is safe to call this function from a worker thread itself.
    */
-  void enqueue(function<void()> f, WallTime when);
+  void enqueue(function<void()> f, Time when);
 
   /**
    * Watches for activity on a given file descriptor and triggers a callback 
@@ -122,7 +128,7 @@ class EventManager {
  private:
   // Stores a scheduled task callback.
   struct Task {
-    WallTime when;
+    time_point<high_resolution_clock> when;
     function<void()> f;
   };
   // Used to sort heap with earliest time at the top
@@ -136,18 +142,17 @@ class EventManager {
    */
   void epollUpdate(int fd, int op);
 
-  pthread_mutex_t _mutex;
+  mutex _mutex;
 
   int _epoll_fd;
   int _event_fd;
-  volatile bool _is_running;
+  bool _is_running;
   
-  std::set<pthread_t> _thread_set;
+  map< thread::id, shared_ptr<thread> > _thread_map;
   
-  std::vector<Task> _tasks;
-  std::map<int, std::map<EventType, function<void()> > > _fds;
+  vector<Task> _tasks;
+  map<int, map<EventType, function<void()> > > _fds;
 
-  static void* trampoline(void *arg);
   void thread_main();
 };
 }

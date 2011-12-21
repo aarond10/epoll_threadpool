@@ -39,10 +39,10 @@
 
 namespace epoll_threadpool {
 
+using namespace std;
 using std::tr1::function;
 
 EventManager::EventManager() : _is_running(false) {
-  pthread_mutex_init(&_mutex, 0);
   _epoll_fd = epoll_create(64);
 
   // Set up and add eventfd to the epoll descriptor
@@ -66,47 +66,43 @@ EventManager::~EventManager() {
   close(_event_fd);
 
   close(_epoll_fd);
-  pthread_mutex_destroy(&_mutex);
 }
 
 bool EventManager::start(int num_threads) {
-  pthread_mutex_lock(&_mutex);
+  lock_guard<mutex> lock(_mutex);
 
   // Tried to call start() from one of our worker threads? There lies madness.
-  if (_thread_set.find(pthread_self()) != _thread_set.end()) {
-    pthread_mutex_unlock(&_mutex);
+  if (_thread_map.find(this_thread::get_id()) != _thread_map.end()) {
     return false;
   }
 
   _is_running = true;
   for (int i = 0; i < num_threads; ++i) {
-    pthread_t thread;
-    pthread_create(&thread, NULL, trampoline, this);
-    _thread_set.insert(thread);
+    shared_ptr<thread> t(new thread(
+        bind(&EventManager::thread_main, this)));
+    _thread_map[t->get_id()] = t;
   }
-  pthread_mutex_unlock(&_mutex);
   return true;
 }
 
 bool EventManager::stop() {
-  pthread_mutex_lock(&_mutex);
+  lock_guard<mutex> lock(_mutex);
 
   // We don't allow a stop() call from one of our worker threads.
-  if (_thread_set.find(pthread_self()) != _thread_set.end()) {
-    pthread_mutex_unlock(&_mutex);
+  if (_thread_map.find(this_thread::get_id()) != _thread_map.end()) {
     return false;
   }
 
   _is_running = false;
 
   eventfd_write(_event_fd, 1);
-  for (set<pthread_t>::const_iterator i = _thread_set.begin();
-      i != _thread_set.end(); ++i) {
-    pthread_mutex_unlock(&_mutex);
-    pthread_join(*i, NULL);
-    pthread_mutex_lock(&_mutex);
+  for (map<thread::id, shared_ptr<thread> >::const_iterator i = 
+           _thread_map.begin(); i != _thread_map.end(); ++i) {
+    _mutex.unlock();
+    i->second->join();
+    _mutex.lock();
   }
-  _thread_set.clear();
+  _thread_map.clear();
 
   // Cancel any unprocessed tasks or fds.
   DLOG_IF(WARNING, !_fds.empty()) << "Stopping event manager with attached "
@@ -115,32 +111,24 @@ bool EventManager::stop() {
       << "tasks.";
   _fds.clear();
   _tasks.clear();
-
-  pthread_mutex_unlock(&_mutex);
   return true;
 }
 
-EventManager::WallTime EventManager::currentTime() {
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  return tv.tv_sec + tv.tv_usec/1000000.0;
-}
-
-void EventManager::enqueue(function<void()> f, WallTime when) {
-  pthread_mutex_lock(&_mutex);
+void EventManager::enqueue(function<void()> f, Time when) {
+  lock_guard<mutex> lock(_mutex);
   Task t = { when, f };
-  double oldwhen = _tasks.empty() ? -1 : _tasks.front().when;
+  Time oldwhen = 
+      _tasks.empty() ? Time::min() : _tasks.front().when;
   _tasks.push_back(t);
   push_heap(_tasks.begin(), _tasks.end(), &EventManager::compareTasks);
   // Do we need to wake up a worker to get this done on time?
   if (oldwhen != _tasks.front().when) {
     eventfd_write(_event_fd, 1);
   }
-  pthread_mutex_unlock(&_mutex);
 }
 
 bool EventManager::watchFd(int fd, EventType type, function<void()> f) {
-  pthread_mutex_lock(&_mutex);
+  lock_guard<mutex> lock(_mutex);
 
   if (_fds.find(fd) == _fds.end()) {
     _fds[fd][type] = f;
@@ -151,15 +139,13 @@ bool EventManager::watchFd(int fd, EventType type, function<void()> f) {
   }
 
   eventfd_write(_event_fd, 1);
-  pthread_mutex_unlock(&_mutex);
   return true;
 }
 
 bool EventManager::removeFd(int fd, EventType type) {
-  pthread_mutex_lock(&_mutex);
+  lock_guard<mutex> lock(_mutex);
 
   if (_fds.find(fd) == _fds.end()) {
-    pthread_mutex_unlock(&_mutex);
     return false;
   }
 
@@ -171,8 +157,6 @@ bool EventManager::removeFd(int fd, EventType type) {
     _fds[fd].erase(type);
     epollUpdate(fd, EPOLL_CTL_MOD);
   }
-
-  pthread_mutex_unlock(&_mutex);
   return true;
 }
 
@@ -180,7 +164,7 @@ void EventManager::epollUpdate(int fd, int epoll_op) {
   struct epoll_event ev;
   ev.data.u64 = 0;  // stop valgrind whinging
   ev.events = 0;
-  for (std::map<EventManager::EventType, 
+  for (map<EventManager::EventType, 
       function<void()> >::iterator i = _fds[fd].begin();
       i != _fds[fd].end(); ++i) {
     switch (i->first) {
@@ -205,31 +189,26 @@ void EventManager::epollUpdate(int fd, int epoll_op) {
       << ", &ev) returned error " << errno;
 }
 
-void* EventManager::trampoline(void *arg) {
-  EventManager *em = static_cast<EventManager *>(arg);
-  em->thread_main();
-  return NULL;
-}
-
 void EventManager::thread_main() {
   const int kMaxEvents = 32;
   const int kEpollDefaultWait = 10000;
 
   struct epoll_event events[kMaxEvents];
-  pthread_mutex_lock(&_mutex);
+  lock_guard<mutex> lock(_mutex);
   while (_is_running) {
     int timeout;
     if (!_tasks.empty()) {
-      timeout = static_cast<int>((_tasks.front().when - currentTime())*1000);
+      timeout = duration_cast<milliseconds>(
+          _tasks.front().when - currentTime()).count();
       if (timeout < 0) {
         timeout = 0;
       }
     } else {
       timeout = kEpollDefaultWait;
     }
-    pthread_mutex_unlock(&_mutex);
+    _mutex.unlock();
     int ret = epoll_wait(_epoll_fd, events, kMaxEvents, timeout);
-    pthread_mutex_lock(&_mutex);
+    _mutex.lock();
 
     if (ret < 0) {
       if (errno != EINTR) {
@@ -250,25 +229,25 @@ void EventManager::thread_main() {
             _fds.find(fd) != _fds.end() &&
             _fds[fd].find(EM_READ) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_READ];
-          pthread_mutex_unlock(&_mutex);
+          _mutex.unlock();
           f();
-          pthread_mutex_lock(&_mutex);
+          _mutex.lock();
         }
         if ((flags | EPOLLOUT) && 
             _fds.find(fd) != _fds.end() &&
             _fds[fd].find(EM_WRITE) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_WRITE];
-          pthread_mutex_unlock(&_mutex);
+          _mutex.unlock();
           f();
-          pthread_mutex_lock(&_mutex);
+          _mutex.lock();
         } 
         if ((flags | EPOLLHUP | EPOLLRDHUP) &&
             _fds.find(fd) != _fds.end() &&
             _fds[fd].find(EM_ERROR) != _fds[fd].end()) {
           function<void()> f = _fds[fd][EM_ERROR];
-          pthread_mutex_unlock(&_mutex);
+          _mutex.unlock();
           f();
-          pthread_mutex_lock(&_mutex);
+          _mutex.lock();
         }
       }
     }
@@ -278,13 +257,12 @@ void EventManager::thread_main() {
       Task t = _tasks.front();
       pop_heap(_tasks.begin(), _tasks.end(), &EventManager::compareTasks);
       _tasks.pop_back();
-      pthread_mutex_unlock(&_mutex);
+      _mutex.unlock();
       t.f();
-      pthread_mutex_lock(&_mutex);
+      _mutex.lock();
     }
   }
   // wake up another thread - its likely we want to shut down.
   eventfd_write(_event_fd, 1); 
-  pthread_mutex_unlock(&_mutex);
 }
 }

@@ -33,9 +33,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+
 #include "eventmanager.h"
 #include "notification.h"
 
+using std::chrono::duration;
+using std::chrono::milliseconds;
 using epoll_threadpool::EventManager;
 using epoll_threadpool::Notification;
 
@@ -51,44 +55,45 @@ TEST(EventManagerTest, StartStop) {
 TEST(EventManagerTest, NotificationDelayedRaise) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(2));
-  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), 
+             t + milliseconds(1));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 }
 
 TEST(EventManagerTest, NotificationPreDelayRaise) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(2));
   em.enqueue(std::tr1::bind(&Notification::signal, &n));
   usleep(10);
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 }
 
 TEST(EventManagerTest, StartEnqueueStop) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   em.start(2);
   em.enqueue(std::tr1::bind(&Notification::signal, &n));
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 }
 
 TEST(EventManagerTest, StartEnqueueStop2) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(2));
-  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.001);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t + milliseconds(1));
   n.wait();
   em.stop();
 }
@@ -96,11 +101,11 @@ TEST(EventManagerTest, StartEnqueueStop2) {
 TEST(EventManagerTest, StartEnqueueStop3) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   ASSERT_TRUE(em.start(2));
-  em.enqueue(std::tr1::bind(&Notification::signal, &n), t+0.005);
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t + milliseconds(5));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 }
 
@@ -117,30 +122,35 @@ void EnqueuedCountCheck(pthread_mutex_t *mutex, int *cnt, Notification *n, int e
 TEST(EventManagerTest, StartEnqueueStop4) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   pthread_mutex_t mutex;
   pthread_mutex_init(&mutex, 0);
   int cnt = 1;
 
   // Check double precision - should be ok but just to be safe...
-  ASSERT_LT(t+0.001, t+0.002);
-  ASSERT_LT(t+0.002, t+0.003);
-  ASSERT_LT(t+0.003, t+0.004);
-  ASSERT_LT(t+0.004, t+0.005);
+  ASSERT_LT(t + milliseconds(1), t + milliseconds(2));
+  ASSERT_LT(t + milliseconds(2), t + milliseconds(3));
+  ASSERT_LT(t + milliseconds(3), t + milliseconds(4));
+  ASSERT_LT(t + milliseconds(4), t + milliseconds(5));
 
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, &n, 5), t+0.005);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 4), t+0.004);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 2), t+0.002);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 1), t+0.001);
-  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 3), t+0.003);
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, &n, 5),
+             t + milliseconds(5));
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 4),
+             t + milliseconds(4));
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 2),
+             t + milliseconds(2));
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 1),
+             t + milliseconds(1));
+  em.enqueue(std::tr1::bind(&EnqueuedCountCheck, &mutex, &cnt, (Notification *)NULL, 3),
+             t + milliseconds(3));
 
   // We start this AFTER adding the tasks to ensure we don't start one before
   // we've added them all. Note that we only start one thread because its 
   // otherwise possible we start two tasks at close to the same time and 
   // the second one runs first, leading to flaky tests.
   ASSERT_TRUE(em.start(1));
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 
   pthread_mutex_destroy(&mutex);
@@ -167,12 +177,12 @@ void WorkerStartStop(EventManager *em) {
 TEST(EventManagerTest, CallMethodsFromWorkerThread) {
   EventManager em;
   Notification n;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   em.enqueue(std::tr1::bind(&WorkerStartStop, &em));
-  em.enqueue(std::tr1::bind(&Notification::signal, &n), t + 0.001);
+  em.enqueue(std::tr1::bind(&Notification::signal, &n), t + milliseconds(1));
   ASSERT_TRUE(em.start(2));
-  ASSERT_TRUE(n.tryWait(t+0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(500)));
   em.stop();
 }
 
@@ -193,7 +203,7 @@ void WatchFdWrite(Notification *n, int fd, EventManager *em) {
 TEST(EventManagerTest, WatchFdAndRemoveFdFromWorker) {
   EventManager em;
   Notification n, n2;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   int fds[2];
   ASSERT_EQ(0, pipe2(fds, O_NONBLOCK));
@@ -203,8 +213,8 @@ TEST(EventManagerTest, WatchFdAndRemoveFdFromWorker) {
   em.watchFd(fds[1], EventManager::EM_WRITE,
       std::tr1::bind(&WatchFdWrite, &n2, fds[1], &em));
   ASSERT_TRUE(em.start(1));
-  ASSERT_TRUE(n.tryWait(t + 0.500));
-  ASSERT_TRUE(n2.tryWait(t + 0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(5)));
+  ASSERT_TRUE(n2.tryWait(t + milliseconds(5)));
   
   ASSERT_TRUE(em.removeFd(fds[0], EventManager::EM_READ));
   em.stop();
@@ -215,7 +225,7 @@ TEST(EventManagerTest, WatchFdAndRemoveFdFromWorker) {
 TEST(EventManagerTest, WatchFdConcurrentReadWrite) {
   EventManager em;
   Notification n, n2;
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
 
   int fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
@@ -228,8 +238,8 @@ TEST(EventManagerTest, WatchFdConcurrentReadWrite) {
   em.watchFd(fds[0], EventManager::EM_WRITE,
       std::tr1::bind(&WatchFdWrite, &n2, fds[0], &em));
   ASSERT_TRUE(em.start(1));
-  ASSERT_TRUE(n.tryWait(t + 0.500));
-  ASSERT_TRUE(n2.tryWait(t + 0.500));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(5)));
+  ASSERT_TRUE(n2.tryWait(t + milliseconds(5)));
   
   ASSERT_TRUE(em.removeFd(fds[0], EventManager::EM_READ));
   em.stop();

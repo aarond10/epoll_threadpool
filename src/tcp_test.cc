@@ -43,10 +43,12 @@ using epoll_threadpool::IOBuffer;
 using epoll_threadpool::Notification;
 using epoll_threadpool::TcpSocket;
 using epoll_threadpool::TcpListenSocket;
+using std::chrono::milliseconds;
+using std::string;
 
-using namespace std;
 using namespace std::tr1;
 using namespace std::tr1::placeholders;
+
 
 shared_ptr<TcpListenSocket> createListenSocket(
     EventManager *em, int &port) {
@@ -115,7 +117,7 @@ TEST(TCPTest, ListenConnectSendDataTest) {
   EventManager em;
   em.start(1);
 
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
   const char *data = "some test data";
   uint64_t size = strlen(data);
 
@@ -130,11 +132,11 @@ TEST(TCPTest, ListenConnectSendDataTest) {
   ASSERT_TRUE(c != NULL);
   c->start();
 
-  ASSERT_FALSE(n.tryWait(t+0.001));
+  ASSERT_FALSE(n.tryWait(t + milliseconds(6)));
   c->write(new IOBuffer((char *)&size, sizeof(size)));
-  ASSERT_FALSE(n.tryWait(t+0.002));
+  ASSERT_FALSE(n.tryWait(t + milliseconds(2)));
   c->write(new IOBuffer(data, size));
-  ASSERT_TRUE(n.tryWait(t+10.0));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(10000)));
   ASSERT_TRUE(ps != NULL);
 
   c->disconnect();
@@ -156,7 +158,7 @@ TEST(TCPTest, ListenConnectDisconnectTest) {
   EventManager em;
   em.start(4);
 
-  EventManager::WallTime t = EventManager::currentTime();
+  EventManager::Time t = EventManager::currentTime();
   const char *data = "some test data";
   uint64_t size = strlen(data);
 
@@ -171,9 +173,9 @@ TEST(TCPTest, ListenConnectDisconnectTest) {
   shared_ptr<TcpSocket> c = TcpSocket::connect(&em, "127.0.0.1", port);
   ASSERT_TRUE(c != NULL);
 
-  ASSERT_FALSE(n.tryWait(t+0.001));
+  ASSERT_FALSE(n.tryWait(t + milliseconds(1)));
   c->disconnect();
-  ASSERT_TRUE(n.tryWait(t+0.4));
+  ASSERT_TRUE(n.tryWait(t + milliseconds(400)));
   ASSERT_TRUE(ps != NULL);
 
   ps->disconnect();
