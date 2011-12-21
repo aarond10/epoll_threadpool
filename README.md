@@ -62,6 +62,8 @@ level coding:
   - TcpListenSocket - A listening socket that creates TcpSocket instances when someone connects. Provides an "onAccept" callback.
   - IOBuffer - A buffering I/O class that defers memory copying as long as possible to avoid redundant copy operations. This is designed to make dealing with received data significantly easier.
   - Notification - A simple pthread-based notification class for blocking until triggered. This should *not* be used on worker threads if possible but can be used to safely clean up from the main application thread.
+  - Future - A proxy object representing a return value that may be set at some stage in the future. This allows for conventional (synchronous) and callback-driven (asynchronous) use cases with minimal fuss.
+  - Barrier - Provides a synchronisation point. This object provides a callback that should be triggered exactly N times. On the Nth time, it calls a function and deletes itself. This functionality *may* be rolled into the Future class at some stage (by chaining Futures).
 
 Examples of how to use these classes will eventually arrive here. Until then, there are a bunch of unit tests sitting in the src/ directory that can be used as examples.
 
@@ -80,7 +82,7 @@ Dependencies
 
 The library depends on the following packages:
 
-  - A recent version of g++ (with std::tr1 support).
+  - A recent version of g++ (with std::tr1 support for function, bind, shared_from_this, ...).
   - pthread
   - [glog](http://code.google.com/p/google-glog/) - used for debug logging
   - [googletest](http://code.google.com/p/googletest/) - for unit tests
