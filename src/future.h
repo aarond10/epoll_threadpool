@@ -36,11 +36,13 @@
 #include <pthread.h>
 
 #include <list>
+#include <set>
 #include <tr1/functional>
 #include <tr1/memory>
 
 namespace epoll_threadpool {
 
+using std::tr1::bind;
 using std::tr1::function;
 using std::tr1::shared_ptr;
 
@@ -121,6 +123,14 @@ class Future {
    */
   void addCallback(function<void(const T&)> callback) {
     _internal->addCallback(callback);
+  }
+
+  /**
+   * Deregisters a callback registered with addCallback() to ensure
+   * it is never called after this function returns.
+   */
+  void removeCallback(function<void(const T&)> callback) {
+    _internal->removeCallback(callback);
   }
 
  private:
@@ -211,6 +221,13 @@ class Future {
       }
     }
 
+    void removeCallback(function<void(const T&)> callback) {
+      pthread_mutex_lock(&_mutex);
+      _callbacks.erase(callback);
+      pthread_mutex_unlock(&_mutex);
+    }
+      
+
    private:
     T* _value;
     pthread_mutex_t _mutex;
@@ -218,6 +235,146 @@ class Future {
     std::list< function<void(const T&)> > _callbacks;
   };
   shared_ptr<Internal> _internal;
+};
+
+/**
+ * This is a convenience object that combines a counter and a set of Future
+ * objects to create a synchronisation barrier.
+ *
+ * To do this cleanly, we use a special FutureSet class and virtualisation
+ * to allow us to store different Future types in the same set. As a result
+ * of this, we are not able to retrieve the results of any of these Future
+ * objects so its the users responsibility to keep a reference to
+ * the Future's around if their results are needed. 
+ *
+ * @note This class expects to eventually be notified by all Futures.
+ *       If it is deleted before all its Future's have returned a result, 
+ *       your application *will* crash.
+ */
+class FutureBarrier {
+ public:
+  /**
+   * Stores a set of arbitrary Future<T> instances.
+   * These instances may be of different types so once added to a FutureSet
+   * they can only ever be waited on. If the result is also required, a
+   * copy of the original Future<T> should be kept elsewhere.
+   */
+  class FutureSet {
+   public:
+    FutureSet() { }
+    virtual ~FutureSet() { }
+    template<class T>
+    void push_back(Future<T> &item) {
+      _items.insert(shared_ptr<Item>(new ConcreteItem<T>(item)));
+    }
+    size_t size() const {
+      return _items.size();
+    }
+   private:
+    friend class FutureBarrier;
+    /**
+     * We use virtualisation to strip the type specialisation from
+     * Future<T> instances for storage in a FutureSet.
+     */
+    class Item {
+     public:
+      virtual ~Item() {}
+      virtual void addCallback(function<void()> callback) = 0;
+      virtual bool tryWait(EventManager::WallTime when) = 0;
+    };
+    template<class T>
+    class ConcreteItem : public Item {
+     public:
+      ConcreteItem(Future<T> &val) : _val(val) { }
+      virtual ~ConcreteItem() { }
+      virtual void addCallback(function<void()> callback) {
+        _val.addCallback(bind(&addCallbackHelper, callback, 
+                              std::tr1::placeholders::_1));
+      }
+      virtual bool tryWait(EventManager::WallTime when) {
+        return _val.tryWait(when);
+      }
+     private:
+      // Helper that discards argument on addCallback() callback.
+      static void addCallbackHelper(function<void()> callback, const T&) {
+        callback();
+      }
+      Future<T> _val;
+    };
+    set< shared_ptr<Item> > _items;
+  };
+
+  FutureBarrier(FutureSet &future_set) {
+    pthread_mutex_init(&_mutex, 0);
+    pthread_cond_init(&_cond, 0);
+    _counter = future_set.size();
+    for (set< shared_ptr<FutureSet::Item> >::iterator i = 
+             future_set._items.begin();
+         i != future_set._items.end(); ++i) {
+      (*i)->addCallback(bind(&FutureBarrier::signal, this));
+    }
+  }
+    
+  ~FutureBarrier() {
+    pthread_mutex_destroy(&_mutex);
+    pthread_cond_destroy(&_cond);
+  }
+    
+  void addCallback(function<void()> callback) {
+    _callbacks.push_back(callback);
+    if (!_counter) {
+      callback();
+      return;
+    }
+    pthread_mutex_lock(&_mutex);
+    if (!_counter) {
+      pthread_mutex_unlock(&_mutex);
+      callback();
+    } else {
+      _callbacks.push_back(callback);
+      pthread_mutex_unlock(&_mutex);
+    }
+  }
+
+  bool tryWait(EventManager::WallTime when) {
+    if (!_counter) {
+      return true;
+    }
+    pthread_mutex_lock(&_mutex);
+    if (!_counter) {
+      pthread_mutex_unlock(&_mutex);
+      return true;
+    }
+    struct timespec ts = { (int64_t)when, 
+                           (when - (int64_t)when) * 1000000000 };
+    int r = pthread_cond_timedwait(&_cond, &_mutex, &ts);
+    pthread_mutex_unlock(&_mutex);
+    return (r == 0);
+  }
+ private:
+  void signal() {
+    pthread_mutex_lock(&_mutex);
+    if (!--_counter) {
+      pthread_cond_broadcast(&_cond);
+      pthread_mutex_unlock(&_mutex);
+      for (std::list< function<void()> >::iterator i = 
+           _callbacks.begin(); i != _callbacks.end(); ++i) {
+        (*i)();
+      }
+      return;
+    } else {
+      pthread_mutex_unlock(&_mutex);
+    }
+  }
+
+  std::list< function<void()> > _callbacks;
+  int _counter;
+  pthread_mutex_t _mutex;
+  pthread_cond_t _cond;
+
+  // Illegal operators
+  FutureBarrier(FutureBarrier &other);
+  FutureBarrier& operator=(FutureBarrier &other);
 };
 
 }

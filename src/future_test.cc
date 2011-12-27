@@ -36,6 +36,7 @@
 
 using epoll_threadpool::EventManager;
 using epoll_threadpool::Future;
+using epoll_threadpool::FutureBarrier;
 using epoll_threadpool::Notification;
 using std::string;
 
@@ -72,5 +73,58 @@ TEST(FutureTest, AddCallback) {
   ASSERT_TRUE(n3.tryWait(t + 1));
   f.addCallback(bind(&callbackHelper, &n4, std::tr1::placeholders::_1));
   ASSERT_TRUE(n4.tryWait(t + 1));
+}
+
+TEST(FutureBarrierTest, TryGet) {
+  Future<string> f1, f2, f3;
+
+  FutureBarrier::FutureSet future_set;
+  future_set.push_back(f1);
+  future_set.push_back(f2);
+  future_set.push_back(f3);
+  FutureBarrier barrier(future_set);
+
+  EventManager::WallTime t = EventManager::currentTime();
+
+  ASSERT_FALSE(barrier.tryWait(t + 0.001));
+  f1.set(string("apple"));
+  ASSERT_FALSE(barrier.tryWait(t + 0.001));
+  f2.set(string("banana"));
+  ASSERT_FALSE(barrier.tryWait(t + 0.001));
+  f3.set(string("carrot"));
+  ASSERT_TRUE(barrier.tryWait(t + 0.004));
+}
+
+TEST(FutureBarrierTest, AddCallback) {
+  Future<string> f1, f2, f3, f4;
+  Notification n1, n2;
+
+  FutureBarrier::FutureSet future_set;
+  future_set.push_back(f1);
+  future_set.push_back(f2);
+  future_set.push_back(f3);
+  FutureBarrier barrier(future_set);
+
+  FutureBarrier::FutureSet future_set2;
+  future_set2.push_back(f1);
+  future_set2.push_back(f2);
+  future_set2.push_back(f3);
+  future_set2.push_back(f4);
+  FutureBarrier barrier2(future_set2);
+
+  EventManager::WallTime t = EventManager::currentTime();
+
+  f1.set(string("apple"));
+  f2.set(string("banana"));
+  f3.set(string("carrot"));
+
+  // Add Callback after all preconditions have been met.
+  barrier.addCallback(bind(&Notification::signal, &n1));
+  ASSERT_TRUE(n1.tryWait(t + 0.001));
+
+  // Add Callback before all preconditions have been met.
+  barrier2.addCallback(bind(&Notification::signal, &n2));
+  f4.set(string("donut"));
+  ASSERT_TRUE(n2.tryWait(t + 0.002));
 }
 
