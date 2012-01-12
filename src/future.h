@@ -139,6 +139,22 @@ class Future {
     _internal->removeCallback(callback);
   }
 
+  /**
+   * Adds an "errback", a callback that is triggered if the Future
+   * is destroyed without ever setting a value.
+   */
+  void addErrback(function<void()> errback) {
+    _internal->addErrback(errback);
+  }
+
+  /**
+   * Deregisters an errback.
+   * @see addErrback
+   */
+  void removeErrback(function<void()> errback) {
+    _internal->removeErrback(errback);
+  }
+
  private:
   class Internal {
    public:
@@ -151,6 +167,12 @@ class Future {
       pthread_cond_init(&_cond, 0);
     }
     virtual ~Internal() {
+      if (_value == NULL) {
+	for (std::list< function<void()> >::iterator i = 
+	     _errbacks.begin(); i != _errbacks.end(); ++i) {
+	  (*i)();
+	}
+      }
       pthread_mutex_destroy(&_mutex);
       pthread_cond_destroy(&_cond);
       delete _value;
@@ -237,12 +259,24 @@ class Future {
       pthread_mutex_unlock(&_mutex);
     }
       
+    void addErrback(function<void()> errback) {
+      pthread_mutex_lock(&_mutex);
+      _errbacks.push_back(errback);
+      pthread_mutex_unlock(&_mutex);
+    }
+
+    void removeErrback(function<void(const T&)> errback) {
+      pthread_mutex_lock(&_mutex);
+      _errbacks.erase(errback);
+      pthread_mutex_unlock(&_mutex);
+    }
 
    private:
     T* _value;
     pthread_mutex_t _mutex;
     pthread_cond_t _cond;
     std::list< function<void(const T&)> > _callbacks;
+    std::list< function<void()> > _errbacks;
 
     Internal(const Internal& other);
     Internal& operator=(const Internal& other);
@@ -301,8 +335,12 @@ class FutureBarrier {
       ConcreteItem(Future<T> &val) : _val(val) { }
       virtual ~ConcreteItem() { }
       virtual void addCallback(function<void()> callback) {
+        // Note that we register both a callback and an errback here
+        // so the provided callback is triggered exactly once regardless 
+        // of whether or not the Future is ever set.
         _val.addCallback(bind(&addCallbackHelper, callback, 
                               std::tr1::placeholders::_1));
+        _val.addErrback(callback);
       }
       virtual bool tryWait(EventManager::WallTime when) {
         return _val.tryWait(when);

@@ -128,3 +128,21 @@ TEST(FutureBarrierTest, AddCallback) {
   ASSERT_TRUE(n2.tryWait(t + 0.002));
 }
 
+TEST(FutureBarrierTest, TryErrBack) {
+  Notification n1, n2;
+  EventManager::WallTime t = EventManager::currentTime();
+
+  FutureBarrier::FutureSet future_set;
+  FutureBarrier barrier(future_set);
+  { 
+    Future<string> f1;
+    future_set.push_back(f1);
+    barrier.addCallback(bind(&Notification::signal, &n1));
+    f1.addCallback(bind(&Notification::signal, &n2));
+  }
+
+
+  ASSERT_TRUE(n1.tryWait(t + 0.002));
+  ASSERT_TRUE(n1.tryWait(t + 0.002));
+}
+
