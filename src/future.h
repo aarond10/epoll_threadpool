@@ -76,12 +76,18 @@ class Future {
     _internal = other._internal; 
   }
   Future &operator=(Future &other) { 
+    if (&other == this) {
+      return *this;
+    }
     if (_internal->hasValue()) {
       LOG(ERROR) << "Future assigned another future's value but value "
                  << "has already been set.";
       return *this;
     }
-    // TODO(aarond10): Retain our callbacks.
+    if (_internal->hasCallbacks()) {
+      LOG(ERROR) << "Future assigned another future but we have "
+                 << "pending callbacks for this one.";
+    }
     _internal = other._internal;
     return *this;
   }
@@ -152,6 +158,10 @@ class Future {
 
     bool hasValue() {
       return (_value != NULL);
+    }
+
+    bool hasCallbacks() {
+      return (_callbacks.size() != 0);
     }
 
     bool set(T* value) {
@@ -233,6 +243,9 @@ class Future {
     pthread_mutex_t _mutex;
     pthread_cond_t _cond;
     std::list< function<void(const T&)> > _callbacks;
+
+    Internal(const Internal& other);
+    Internal& operator=(const Internal& other);
   };
   shared_ptr<Internal> _internal;
 };
