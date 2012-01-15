@@ -204,6 +204,9 @@ class Future {
 	     _callbacks.begin(); i != _callbacks.end(); ++i) {
 	  (*i)(*_value);
 	}
+        // Must delete callbacks last as they may be holding references to us.
+        _callbacks.clear();
+        _errbacks.clear();
         return true;
       }
     }
