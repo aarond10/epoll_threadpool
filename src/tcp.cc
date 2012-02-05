@@ -32,6 +32,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 #include <glog/logging.h>
 
@@ -54,6 +56,7 @@ TcpSocket::Internal::Internal(EventManager* em, int fd)
   pthread_mutex_init(&_mutex, 0);
   fcntl(_fd, F_SETFL, O_NONBLOCK);
 }
+
 TcpSocket::Internal::~Internal() {
   disconnect();
   pthread_mutex_destroy(&_mutex);
@@ -175,7 +178,7 @@ void TcpSocket::Internal::onReceive() {
     vector<char>* buf = new vector<char>();
     buf->resize(4096);
 
-    int r = ::read(_fd, &(*buf)[0], buf->size());
+    int r = ::recv(_fd, &(*buf)[0], buf->size(), 0);
     if (r > 0) {
       buf->resize(r);
       _recvBuffer.append(buf);
@@ -210,7 +213,7 @@ void TcpSocket::Internal::onCanSend() {
                    kMaxSendSize : _sendBuffer.size();
       const char* buf = _sendBuffer.pulldown(sz);
       if (buf) {
-        int r = ::write(_fd, buf, sz);
+        int r = ::send(_fd, buf, sz, MSG_NOSIGNAL);
         if (r > 0) {
           _sendBuffer.consume(r);
         } else if (r < 0) {
