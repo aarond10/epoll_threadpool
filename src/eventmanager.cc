@@ -126,7 +126,7 @@ EventManager::WallTime EventManager::currentTime() {
   return tv.tv_sec + tv.tv_usec/1000000.0;
 }
 
-void EventManager::enqueue(function<void()> f, WallTime when) {
+void EventManager::enqueue(Function f, WallTime when) {
   pthread_mutex_lock(&_mutex);
   Task t = { when, f };
   double oldwhen = _tasks.empty() ? -1 : _tasks.front().when;

@@ -237,6 +237,34 @@ TEST(EventManagerTest, WatchFdConcurrentReadWrite) {
   close(fds[1]);
 }
 
+void TestCancelA() {
+  // We expect this to get called.
+}
+void TestCancelB() {
+  // We expec this to get cancelled and never called.
+  ASSERT_TRUE(false);
+}
+
+TEST(EventManagerTest, TestCancel) {
+  EventManager em;
+  Notification n;
+  EventManager::WallTime t = EventManager::currentTime();
+
+  em.enqueue(&TestCancelA);
+  em.enqueue(&TestCancelA);
+
+  EventManager::Function f(&TestCancelB);
+  em.enqueue(f);
+  f.cancel();
+
+  em.enqueue(std::tr1::bind(&Notification::signal, &n));
+
+  ASSERT_TRUE(em.start(1));
+  ASSERT_TRUE(n.tryWait(t + 0.500));
+  em.stop();
+}
+
+
 // TODO: Test watchFd() with two events firing one at a time.
 // TODO: Test watchFd() with two events firing at the same time.
 

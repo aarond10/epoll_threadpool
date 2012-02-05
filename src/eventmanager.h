@@ -34,6 +34,7 @@
 #include <map>
 #include <set>
 #include <tr1/functional>
+#include <tr1/memory>
 #include <vector>
 
 #include <pthread.h>
@@ -43,6 +44,7 @@ namespace epoll_threadpool {
 
 using namespace std;
 using std::tr1::function;
+using std::tr1::shared_ptr;
 
 /**
  * Tiny epoll based event manager with a configurable pool of threads.
@@ -61,6 +63,50 @@ class EventManager {
     EM_READ,
     EM_WRITE,
     EM_ERROR
+  };
+
+  /**
+   * A simple std::tr1::function wrapper that adds the ability to cancel
+   * a call if it hasn't already started. Internally reference counted
+   * to make passing the function object around easy to do.
+   */
+  class Function {
+   public:
+    template<class T>
+    Function(T f) : _internal(new Internal(f)) { }
+    void cancel() {
+      _internal->cancel();
+    }
+    void operator()() {
+      _internal->run();
+    }
+   private:
+    class Internal {
+     public:
+      Internal(function<void()> f) : _f(f) {
+        pthread_mutex_init(&_mutex, 0);
+      }
+      ~Internal() {
+        pthread_mutex_destroy(&_mutex);
+      }
+      void cancel() {
+        pthread_mutex_lock(&_mutex);
+        _f = NULL;
+        pthread_mutex_unlock(&_mutex);
+      }
+      void run() {
+        pthread_mutex_lock(&_mutex);
+        function<void()> f(_f);
+        pthread_mutex_unlock(&_mutex);
+        if (f != NULL) {
+          f();
+        }
+      }
+     private:
+      pthread_mutex_t _mutex;
+      function<void()> _f;
+    };
+    shared_ptr<Internal> _internal;
   };
 
   EventManager();
@@ -91,7 +137,7 @@ class EventManager {
    * The function will be run on the first available thread.
    * It is safe to call this function from a worker thread itself.
    */
-  void enqueue(function<void()> f) {
+  void enqueue(Function f) {
     enqueue(f, currentTime());
   }
 
@@ -101,7 +147,7 @@ class EventManager {
    * requested time.
    * It is safe to call this function from a worker thread itself.
    */
-  void enqueue(function<void()> f, WallTime when);
+  void enqueue(Function f, WallTime when);
 
   /**
    * Watches for activity on a given file descriptor and triggers a callback 
@@ -123,7 +169,7 @@ class EventManager {
   // Stores a scheduled task callback.
   struct Task {
     WallTime when;
-    function<void()> f;
+    Function f;
   };
   // Used to sort heap with earliest time at the top
   static bool compareTasks(const Task&a, const Task& b) { 
