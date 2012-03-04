@@ -144,6 +144,8 @@ class TcpSocket {
     pthread_mutex_t _mutex;
     EventManager* _em;
     int _fd;
+    int _maxReceiveSize;
+    int _maxSendSize;
     volatile bool _isStarted;
     IOBuffer _recvBuffer;
     IOBuffer _sendBuffer;

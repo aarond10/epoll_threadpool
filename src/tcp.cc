@@ -55,6 +55,19 @@ TcpSocket::Internal::Internal(EventManager* em, int fd)
     : _em(em), _fd(fd), _isStarted(false) {
   pthread_mutex_init(&_mutex, 0);
   fcntl(_fd, F_SETFL, O_NONBLOCK);
+  int err;
+  socklen_t size = sizeof(_maxSendSize); 
+  if ((err = getsockopt(fd, SOL_SOCKET, SO_SNDBUF, 
+                        (char*) &_maxSendSize, &size)) != 0) {
+    LOG(WARNING) << "Unable to determine maximum send size. Assuming 4k.";
+    _maxSendSize = 4096;
+  }
+  size = sizeof(_maxReceiveSize); 
+  if ((err = getsockopt(fd, SOL_SOCKET, SO_RCVBUF, 
+                        (char*) &_maxReceiveSize, &size)) != 0) {
+    LOG(WARNING) << "Unable to determine maximum receive size. Assuming 4k.";
+    _maxReceiveSize = 4096;
+  }
 }
 
 TcpSocket::Internal::~Internal() {
@@ -176,7 +189,7 @@ void TcpSocket::Internal::onReceive() {
   pthread_mutex_lock(&_mutex);
   while (_fd > 0) {
     vector<char>* buf = new vector<char>();
-    buf->resize(4096);
+    buf->resize(_maxReceiveSize);
 
     int r = ::recv(_fd, &(*buf)[0], buf->size(), 0);
     if (r > 0) {
@@ -205,12 +218,11 @@ void TcpSocket::Internal::onReceive() {
 }
 
 void TcpSocket::Internal::onCanSend() {
-  const int kMaxSendSize = 4096;
   pthread_mutex_lock(&_mutex);
   if (_fd > 0) {
     while (_sendBuffer.size()) {
-      int sz = (_sendBuffer.size() > kMaxSendSize) ? 
-                   kMaxSendSize : _sendBuffer.size();
+      int sz = (_sendBuffer.size() > _maxSendSize) ? 
+                   _maxSendSize : _sendBuffer.size();
       const char* buf = _sendBuffer.pulldown(sz);
       if (buf) {
         int r = ::send(_fd, buf, sz, MSG_NOSIGNAL);
